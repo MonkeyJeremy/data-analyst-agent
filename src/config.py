@@ -1,0 +1,3 @@
+MODEL_NAME = "claude-sonnet-4-6"
+MAX_TOKENS = 4096
+MAX_TOOL_ITERATIONS = 5
