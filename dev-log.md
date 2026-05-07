@@ -493,3 +493,101 @@ path; the layout detection path needs it equally.
 - [x] `app.py` — 5 edits: imports, session keys, `_commit_upload()`, `_handle_upload()` rewrite, main() gate + clear button
 - [x] `tests/test_layout.py` — 16 tests, 88% coverage
 - [x] All 71 tests passing
+
+---
+
+## Session 5 — 2026-05-07: v3 JSON + SQL Support
+
+### Summary
+Expanded the agent to support JSON files, SQLite file uploads, and live SQL database connections.
+Introduced a dual-mode architecture: DataFrame mode (existing) and SQL mode (new `execute_sql` tool).
+Added 31 new tests (11 JSON loader + 20 SQL executor/connection). 102 total tests, all passing.
+
+---
+
+### [DECISION] Dual-mode architecture: DataFrame vs SQL
+Rather than trying to convert SQL results to a DataFrame and run the existing execute_python pipeline,
+introduced a proper SQL mode with its own system prompt and `execute_sql` tool. This lets Claude write
+real SQL (JOIN, GROUP BY, subqueries) instead of working around the ORM or recreating SQL semantics
+in pandas.
+Tradeoff: no plotly charts in SQL mode (the tool returns markdown tables, not a live DataFrame). This
+is acceptable for v3 — users who want plots can "Load as DataFrame" instead.
+
+---
+
+### [DECISION] `execute_sql` safety guard: SELECT/WITH/EXPLAIN only
+The executor checks the query string with a regex before sending it to pandas.read_sql. Any statement
+not starting with SELECT, WITH, or EXPLAIN is immediately rejected with a clear error message.
+Rationale: users upload their own databases but could accidentally write a destructive query; the
+agent could also hallucinate DELETE/DROP. The guard makes it impossible.
+
+---
+
+### [DECISION] SQLite file upload → single table loads as DataFrame automatically
+If a .db/.sqlite file contains exactly one table, it's loaded directly into a DataFrame and the
+existing EDA + chat pipeline runs unchanged — no mode switch needed. Only multi-table SQLite files
+trigger the table picker and SQL mode option.
+Rationale: most people who upload a SQLite file have one canonical data table and just want to
+analyse it like a CSV.
+
+---
+
+### [DECISION] SQLConnection as a non-frozen dataclass
+SQLAlchemy engines are stateful connection pools. Using `frozen=True` would prevent reassignment
+but can't prevent the engine from changing internal state (connections, pool). Using a regular
+dataclass is honest about the resource's nature and allows `dispose()` for proper cleanup.
+Pure data objects (LayoutResult, EDAReport, TableSchema, ColumnInfo) remain frozen.
+
+---
+
+### [DECISION] JSON loading via json.loads + json_normalize (not pd.read_json)
+`pd.read_json` silently swallows nested structures (a `{"data":[...]}` wrapper produces a column
+called "data" containing a list, not a flat DataFrame). Using `json.loads` first gives explicit
+control: detect wrapper keys, call json_normalize on the inner array, handle edge cases cleanly.
+Only two extra lines of code vs. a class of silent failure modes.
+
+---
+
+### [INSIGHT] pd.read_sql requires the engine URL scheme to match
+For SQLite: `create_engine("sqlite:///path.db")` — note the triple slash for relative paths, four
+for absolute (`sqlite:////absolute/path`). Passing raw sqlite3 connections to `pd.read_sql` is
+deprecated in SQLAlchemy 2.0+. Always use an Engine object.
+
+---
+
+### [MISTAKE] test_load_unsupported_format was testing ".json" which is now a supported format
+After adding JSON support to load_tabular(), the test `test_load_unsupported_format` passed
+`"file.json"` and expected a ValueError("Unsupported file format"). Fixed by changing the test
+to use `"file.parquet"` which remains unsupported.
+
+---
+
+### Coverage Summary (Session 5)
+
+| Module | Coverage |
+|--------|----------|
+| `src/db/connection.py` | 91% |
+| `src/db/executor.py` | 93% |
+| `src/db/schema.py` | 93% |
+| `src/data/loader.py` | 90% |
+| `src/agent/loop.py` | 91% |
+| All previous modules | unchanged |
+
+### Session 5 Completed Checklist
+
+- [x] `src/db/__init__.py` — package init
+- [x] `src/db/connection.py` — `SQLConnection`, `connect_sqlite_file()`, `connect_url()`
+- [x] `src/db/schema.py` — `ColumnInfo`, `TableSchema`, `describe_sql_schema()`
+- [x] `src/db/executor.py` — `execute_sql()` (read-only guard + markdown output), `load_table()`
+- [x] `src/data/loader.py` — `.json` branch via `_load_json()` + json_normalize
+- [x] `src/agent/tools.py` — `_SQL_TOOL`, `get_tool_schemas(mode)`, extended `dispatch_tool()`
+- [x] `src/agent/system_prompt.py` — `build_sql_system_prompt(schemas)`
+- [x] `src/agent/loop.py` — `sql_engine` / `sql_schema` params, mode detection
+- [x] `src/ui/sql_panel.py` — `render_sql_connect_panel()`, `render_sql_stats()`
+- [x] `src/ui/upload_panel.py` — added json/db/sqlite accepted types
+- [x] `app.py` — new session keys, SQLite upload branch, JSON upload branch, SQL table picker, SQL mode agent path, live SQL connect in sidebar, unified clear/reset
+- [x] `tests/test_json_loader.py` — 11 tests, all passing
+- [x] `tests/test_sql_executor.py` — 20 tests, all passing
+- [x] `tests/test_loader.py` — fixed broken test (unsupported format now uses .parquet)
+- [x] `tests/fixtures/sample.json` + `nested.json` — created
+- [x] 102/102 tests passing

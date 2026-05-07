@@ -27,7 +27,7 @@ def test_load_csv_from_bytes():
 
 def test_load_unsupported_format():
     with pytest.raises(ValueError, match="Unsupported file format"):
-        load_tabular(io.BytesIO(b"data"), "file.json")
+        load_tabular(io.BytesIO(b"data"), "file.parquet")
 
 
 def test_load_malformed_csv():

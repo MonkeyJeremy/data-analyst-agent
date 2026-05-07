@@ -1,0 +1,8 @@
+{
+  "data": [
+    {"id": 1, "name": "Product A", "metrics": {"revenue": 12000, "cost": 4500, "margin": 0.625}},
+    {"id": 2, "name": "Product B", "metrics": {"revenue": 8500,  "cost": 3200, "margin": 0.624}},
+    {"id": 3, "name": "Product C", "metrics": {"revenue": 21000, "cost": 9000, "margin": 0.571}}
+  ],
+  "meta": {"source": "sales_db", "version": "1.0"}
+}

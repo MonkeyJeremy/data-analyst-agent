@@ -7,8 +7,8 @@ from typing import Any
 import pandas as pd
 
 from src.agent.client import LLMClient
-from src.agent.system_prompt import build_system_prompt
-from src.agent.tools import TOOL_SCHEMAS, dispatch_tool
+from src.agent.system_prompt import build_system_prompt, build_sql_system_prompt
+from src.agent.tools import get_tool_schemas, dispatch_tool
 from src.config import MAX_TOOL_ITERATIONS
 from src.data.schema import SchemaContext
 from src.execution.result import ExecutionResult
@@ -33,23 +33,68 @@ class TurnResult:
 def run_agent_turn(
     client: LLMClient,
     messages: list[dict],
-    df: pd.DataFrame,
-    schema: SchemaContext,
+    df: pd.DataFrame | None = None,
+    schema: SchemaContext | None = None,
     eda_summary: str | None = None,
+    sql_engine: Any | None = None,
+    sql_schema: tuple | None = None,
 ) -> TurnResult:
     """Run one user turn through the bounded ReAct loop.
 
-    Mutates a local copy of messages; the caller receives the updated history
-    in TurnResult.messages and should persist it to session state.
+    Supports two execution modes:
+
+    **DataFrame mode** (default):
+        Pass *df* and *schema*.  The agent uses the ``execute_python`` tool.
+
+    **SQL mode**:
+        Pass *sql_engine* and *sql_schema*.  The agent uses the ``execute_sql``
+        tool.  *df* and *schema* are ignored.
+
+    Parameters
+    ----------
+    client:
+        LLM client for making API calls.
+    messages:
+        Current conversation history (mutated locally; original is unchanged).
+    df:
+        DataFrame for DataFrame mode.
+    schema:
+        Schema context for DataFrame mode.
+    eda_summary:
+        Pre-computed EDA narrative injected into the system prompt.
+    sql_engine:
+        SQLAlchemy engine for SQL mode.
+    sql_schema:
+        Tuple of :class:`~src.db.schema.TableSchema` objects for SQL mode.
+
+    Returns
+    -------
+    TurnResult
+        Updated message history plus any figures produced.
     """
+    # ── Determine mode ────────────────────────────────────────────────────────
+    is_sql = sql_engine is not None
+    mode = "sql" if is_sql else "dataframe"
+
+    # ── Build system prompt ───────────────────────────────────────────────────
+    if is_sql:
+        if sql_schema is None:
+            sql_schema = ()
+        system = build_sql_system_prompt(sql_schema)
+    else:
+        if schema is None:
+            raise ValueError("schema must be provided for DataFrame mode.")
+        system = build_system_prompt(schema, eda_summary)
+
+    tools = get_tool_schemas(mode)
+
     history = copy.deepcopy(messages)
-    system = build_system_prompt(schema, eda_summary)
     tool_calls: list[ToolCallRecord] = []
     all_figures: list[bytes] = []
     all_plotly_figures: list[str] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        response = client.call(system=system, messages=history, tools=TOOL_SCHEMAS)
+        response = client.call(system=system, messages=history, tools=tools)
 
         if response.stop_reason == "end_turn":
             final_text = _extract_text(response)
@@ -63,14 +108,18 @@ def run_agent_turn(
             )
 
         if response.stop_reason == "tool_use":
-            # Append the full assistant message (may contain text + tool_use blocks)
             history.append({"role": "assistant", "content": response.content})
 
             tool_results: list[dict] = []
             for block in response.content:
                 if block.type != "tool_use":
                     continue
-                result = dispatch_tool(block.name, block.input, df)
+                result = dispatch_tool(
+                    block.name,
+                    block.input,
+                    df=df,
+                    sql_engine=sql_engine,
+                )
                 tool_calls.append(
                     ToolCallRecord(
                         tool_name=block.name,

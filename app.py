@@ -1,21 +1,24 @@
 from __future__ import annotations
 
+import io
 import os
 
 import streamlit as st
 from dotenv import load_dotenv
-
-import io
 
 from src.agent.client import LLMClient
 from src.agent.loop import run_agent_turn
 from src.data.layout import detect_layout
 from src.data.loader import load_tabular
 from src.data.schema import describe_schema
+from src.db.connection import connect_sqlite_file
+from src.db.executor import load_table
+from src.db.schema import describe_sql_schema
 from src.eda.auto_eda import run_auto_eda
 from src.ui.chat_panel import render_chat_history, render_turn_figures
 from src.ui.eda_panel import render_eda_panel
 from src.ui.layout_panel import _CANCEL_SENTINEL, render_layout_panel
+from src.ui.sql_panel import render_sql_connect_panel, render_sql_stats
 from src.ui.styles import inject
 from src.ui.upload_panel import render_file_upload
 
@@ -37,6 +40,14 @@ _DEFAULT_SUGGESTIONS = [
     "Plot the most interesting relationship you can find.",
 ]
 
+_SQL_SUGGESTIONS = [
+    "What tables are in this database and how many rows does each have?",
+    "Show me 10 sample rows from each table.",
+    "What columns are available in each table?",
+    "Find the top 10 records by the most relevant numeric column.",
+    "Are there any obvious relationships between the tables?",
+]
+
 
 def _init_session_state() -> None:
     defaults: dict = {
@@ -50,6 +61,10 @@ def _init_session_state() -> None:
         "pending_query": None,       # set by suggestion chips
         "_layout_result": None,      # LayoutResult from last detection
         "_layout_file_bytes": None,  # raw bytes held for user confirmation
+        # SQL mode
+        "sql_connection": None,      # SQLConnection | None
+        "sql_tables": None,          # list[str] | None — multi-table picker
+        "_mode": "dataframe",        # "dataframe" | "sql"
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -86,7 +101,28 @@ def _render_sidebar() -> str:
         if uploaded is not None:
             _handle_upload(uploaded)
 
-        # Dataset preview
+        # SQL connect (live database)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("#### 🗄️ Or connect to SQL database")
+        conn = render_sql_connect_panel()
+        if conn is not None:
+            # Dispose old connection if any
+            old = st.session_state.get("sql_connection")
+            if old is not None:
+                old.dispose()
+            st.session_state.sql_connection = conn
+            st.session_state.sql_tables = None
+            st.session_state._mode = "sql"
+            st.session_state.messages = []
+            st.session_state.last_figures = ()
+            st.session_state.last_plotly_figures = ()
+            st.session_state.df = None
+            st.session_state.schema = None
+            st.session_state.eda = None
+            st.session_state["_last_filename"] = "SQL connection"
+            st.rerun()
+
+        # Dataset preview (DataFrame mode only)
         if st.session_state.df is not None:
             st.markdown("<hr>", unsafe_allow_html=True)
             st.markdown("#### 🔍 Preview")
@@ -96,18 +132,38 @@ def _render_sidebar() -> str:
                 hide_index=False,
             )
 
-            # Reset button
+        # Reset button
+        if (
+            st.session_state.df is not None
+            or st.session_state.get("sql_connection") is not None
+        ):
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🗑️  Clear & upload new file", use_container_width=True):
-                for key in ("df", "schema", "eda", "messages", "last_figures",
-                            "last_plotly_figures", "_last_filename",
-                            "_layout_result", "_layout_file_bytes"):
-                    st.session_state[key] = None if key not in ("messages",) else []
-                st.session_state.last_figures = ()
-                st.session_state.last_plotly_figures = ()
+                _reset_all_state()
                 st.rerun()
 
     return api_key_input
+
+
+def _reset_all_state() -> None:
+    """Reset all data/chat state back to the initial empty condition."""
+    # Dispose SQL connection before clearing
+    conn = st.session_state.get("sql_connection")
+    if conn is not None:
+        conn.dispose()
+
+    for key in (
+        "df", "schema", "eda", "_last_filename",
+        "_layout_result", "_layout_file_bytes",
+        "sql_connection", "sql_tables",
+    ):
+        st.session_state[key] = None
+
+    st.session_state.messages = []
+    st.session_state.last_figures = ()
+    st.session_state.last_plotly_figures = ()
+    st.session_state.pending_query = None
+    st.session_state._mode = "dataframe"
 
 
 def _commit_upload(df: object, filename: str) -> None:
@@ -121,6 +177,13 @@ def _commit_upload(df: object, filename: str) -> None:
     st.session_state.last_plotly_figures = ()
     st.session_state["_last_filename"] = filename
     st.session_state.pending_query = None
+    st.session_state._mode = "dataframe"
+    # Clear any SQL state
+    old_conn = st.session_state.get("sql_connection")
+    if old_conn is not None:
+        old_conn.dispose()
+    st.session_state.sql_connection = None
+    st.session_state.sql_tables = None
 
 
 def _handle_upload(uploaded: object) -> None:
@@ -131,8 +194,33 @@ def _handle_upload(uploaded: object) -> None:
     try:
         file_bytes = uploaded.read()
         uploaded.seek(0)  # reset so pandas can read it too
+        name_lower = uploaded.name.lower()
 
-        # Detect layout before loading
+        # ── SQLite path ───────────────────────────────────────────────────────
+        if name_lower.endswith((".db", ".sqlite")):
+            conn = connect_sqlite_file(file_bytes)
+            st.session_state["_last_filename"] = uploaded.name
+            st.session_state._layout_result = None
+            if len(conn.tables) == 1:
+                # Single table → load as DataFrame (no mode switch needed)
+                df = load_table(conn.engine, conn.tables[0])
+                conn.dispose()
+                _commit_upload(df, uploaded.name)
+            else:
+                # Multiple tables → show picker in main()
+                st.session_state.sql_connection = conn
+                st.session_state.sql_tables = list(conn.tables)
+            return
+
+        # ── JSON path ─────────────────────────────────────────────────────────
+        if name_lower.endswith(".json"):
+            df = load_tabular(io.BytesIO(file_bytes), uploaded.name)
+            st.session_state["_last_filename"] = uploaded.name
+            st.session_state._layout_result = None
+            _commit_upload(df, uploaded.name)
+            return
+
+        # ── CSV / Excel path — run layout detection ───────────────────────────
         result = detect_layout(file_bytes, uploaded.name)
         st.session_state._layout_result = result
         st.session_state._layout_file_bytes = file_bytes
@@ -170,7 +258,7 @@ def _render_welcome() -> None:
 
     c1, c2, c3 = st.columns(3)
     cards = [
-        ("📤", "Upload", "Drop in any CSV or Excel file — no size limit for most datasets."),
+        ("📤", "Upload", "CSV, Excel, JSON or SQLite files — no size limit for most datasets."),
         ("💬", "Ask", "Type a question in plain English. The agent writes and runs real code."),
         ("📈", "Discover", "Get tables, interactive charts, and clear explanations instantly."),
     ]
@@ -188,7 +276,7 @@ def _render_welcome() -> None:
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown(
         "<p style='text-align:center;opacity:0.4;font-size:0.9rem'>"
-        "⬅️  Upload a CSV or Excel file in the sidebar to get started.</p>",
+        "⬅️  Upload a file or connect to a SQL database in the sidebar.</p>",
         unsafe_allow_html=True,
     )
 
@@ -211,15 +299,55 @@ def _render_dataset_stats() -> None:
     st.markdown("<br>", unsafe_allow_html=True)
 
 
+# ── SQL table picker ──────────────────────────────────────────────────────────
+
+def _render_sql_table_picker() -> None:
+    """Let the user choose a table and how to open it (DataFrame vs SQL mode)."""
+    conn = st.session_state.sql_connection
+    if conn is None:
+        return
+
+    st.markdown("### 🗄️ Multiple tables found")
+    st.caption(
+        f"The uploaded database contains {len(conn.tables)} tables. "
+        "Choose one to explore, or enter SQL mode to query across all tables."
+    )
+
+    table = st.selectbox(
+        "Select table:",
+        options=st.session_state.sql_tables,
+        key="_sql_table_picker",
+    )
+
+    col_df, col_sql = st.columns([1, 1])
+    with col_df:
+        if st.button("📊 Load as DataFrame", use_container_width=True, type="primary"):
+            try:
+                df = load_table(conn.engine, table)
+                conn.dispose()
+                st.session_state.sql_connection = None
+                st.session_state.sql_tables = None
+                _commit_upload(df, table)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Failed to load table '{table}': {exc}")
+
+    with col_sql:
+        if st.button("🔍 SQL Mode (all tables)", use_container_width=True):
+            st.session_state._mode = "sql"
+            st.session_state.sql_tables = None
+            st.rerun()
+
+
 # ── Suggestion chips ──────────────────────────────────────────────────────────
 
 def _render_suggestions() -> None:
-    """Show clickable example questions. Sets session_state.pending_query on click.
-
-    Uses EDA-derived questions when available; falls back to generic defaults.
-    """
-    eda = st.session_state.get("eda")
-    questions = list(eda.suggested_questions) if eda else _DEFAULT_SUGGESTIONS
+    """Show clickable example questions. Sets session_state.pending_query on click."""
+    if st.session_state.get("_mode") == "sql":
+        questions = _SQL_SUGGESTIONS
+    else:
+        eda = st.session_state.get("eda")
+        questions = list(eda.suggested_questions) if eda else _DEFAULT_SUGGESTIONS
 
     st.markdown(
         "<p style='opacity:0.45;font-size:0.82rem;margin-bottom:0.5rem'>"
@@ -244,18 +372,28 @@ def _run_query(prompt: str, api_key: str) -> None:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.spinner("🤔 Analysing…"):
         try:
-            eda_summary = (
-                st.session_state.eda.narrative
-                if st.session_state.get("eda") is not None
-                else None
-            )
-            result = run_agent_turn(
-                client=LLMClient(api_key=api_key),
-                messages=st.session_state.messages,
-                df=st.session_state.df,
-                schema=st.session_state.schema,
-                eda_summary=eda_summary,
-            )
+            if st.session_state.get("_mode") == "sql":
+                sql_conn = st.session_state.sql_connection
+                sql_schema = describe_sql_schema(sql_conn.engine)
+                result = run_agent_turn(
+                    client=LLMClient(api_key=api_key),
+                    messages=st.session_state.messages,
+                    sql_engine=sql_conn.engine,
+                    sql_schema=sql_schema,
+                )
+            else:
+                eda_summary = (
+                    st.session_state.eda.narrative
+                    if st.session_state.get("eda") is not None
+                    else None
+                )
+                result = run_agent_turn(
+                    client=LLMClient(api_key=api_key),
+                    messages=st.session_state.messages,
+                    df=st.session_state.df,
+                    schema=st.session_state.schema,
+                    eda_summary=eda_summary,
+                )
             st.session_state.messages = result.messages
             st.session_state.last_figures = result.figures
             st.session_state.last_plotly_figures = result.plotly_figures
@@ -301,14 +439,31 @@ def main() -> None:
             # Non-blocking banner shown inline above the stats bar
             render_layout_panel(layout_result, b"", "")
 
-    if st.session_state.df is None:
+    # ── SQL table picker (multi-table SQLite upload) ──────────────────────────
+    if st.session_state.sql_tables:
+        _render_sql_table_picker()
+        return
+
+    # ── Welcome screen ────────────────────────────────────────────────────────
+    is_sql_mode = st.session_state.get("_mode") == "sql"
+    has_data = st.session_state.df is not None or (
+        is_sql_mode and st.session_state.sql_connection is not None
+    )
+    if not has_data:
         _render_welcome()
         return
 
-    _render_dataset_stats()
+    # ── Stats bar ─────────────────────────────────────────────────────────────
+    if is_sql_mode:
+        render_sql_stats(
+            st.session_state.sql_connection,
+            st.session_state.get("_last_filename", "database"),
+        )
+    else:
+        _render_dataset_stats()
 
-    # EDA panel — collapsed by default, available immediately after upload
-    if st.session_state.eda is not None:
+    # EDA panel — DataFrame mode only
+    if not is_sql_mode and st.session_state.eda is not None:
         render_eda_panel(st.session_state.eda, st.session_state.df)
 
     # Show suggestions only when chat is empty

@@ -1,49 +1,141 @@
+"""Agent tool schemas and dispatch routing.
+
+Two execution modes:
+- ``"dataframe"`` — ``execute_python`` runs arbitrary pandas/plotly code against ``df``.
+- ``"sql"``       — ``execute_sql`` runs read-only SQL queries against a live engine.
+"""
 from __future__ import annotations
+
+from typing import Any
 
 import pandas as pd
 
 from src.execution.python_executor import execute_python
 from src.execution.result import ExecutionResult
 
-TOOL_SCHEMAS: list[dict] = [
-    {
-        "name": "execute_python",
-        "description": (
-            "Execute Python code against the user's DataFrame (variable: `df`). "
-            "Pre-imported: pandas (pd), numpy (np), "
-            "plotly.graph_objects (go), plotly.express (px), "
-            "matplotlib.pyplot (plt), seaborn (sns). "
-            "PREFER plotly (go or px) for all charts — assign the figure to any variable "
-            "and it will be rendered interactively (e.g. `fig = px.bar(...)`). "
-            "Use print() for text output. "
-            "Do NOT re-read the file. Do NOT use input() or network calls."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "Valid Python code to execute.",
-                },
-                "purpose": {
-                    "type": "string",
-                    "description": "One-sentence explanation shown to the user.",
-                },
+# ── Tool definitions ──────────────────────────────────────────────────────────
+
+_PYTHON_TOOL: dict = {
+    "name": "execute_python",
+    "description": (
+        "Execute Python code against the user's DataFrame (variable: `df`). "
+        "Pre-imported: pandas (pd), numpy (np), "
+        "plotly.graph_objects (go), plotly.express (px), "
+        "matplotlib.pyplot (plt), seaborn (sns). "
+        "PREFER plotly (go or px) for all charts — assign the figure to any variable "
+        "and it will be rendered interactively (e.g. `fig = px.bar(...)`). "
+        "Use print() for text output. "
+        "Do NOT re-read the file. Do NOT use input() or network calls."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "Valid Python code to execute.",
             },
-            "required": ["code", "purpose"],
+            "purpose": {
+                "type": "string",
+                "description": "One-sentence explanation shown to the user.",
+            },
         },
-    }
-]
+        "required": ["code", "purpose"],
+    },
+}
+
+_SQL_TOOL: dict = {
+    "name": "execute_sql",
+    "description": (
+        "Execute a SQL SELECT query against the connected database. "
+        "Returns a markdown table of results (up to 50 rows). "
+        "Use this to query, filter, aggregate, and explore the database tables. "
+        "READ-ONLY — only SELECT, WITH (CTEs), and EXPLAIN are permitted."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The SQL SELECT statement to execute.",
+            },
+            "purpose": {
+                "type": "string",
+                "description": "One-sentence explanation of what this query finds.",
+            },
+        },
+        "required": ["query", "purpose"],
+    },
+}
+
+# Backward-compatible alias (used by existing tests that import TOOL_SCHEMAS directly)
+TOOL_SCHEMAS: list[dict] = [_PYTHON_TOOL]
 
 
-def dispatch_tool(name: str, tool_input: dict, df: pd.DataFrame) -> ExecutionResult:
+def get_tool_schemas(mode: str = "dataframe") -> list[dict]:
+    """Return the tool list for the given execution *mode*.
+
+    Parameters
+    ----------
+    mode:
+        ``"dataframe"`` (default) — returns the ``execute_python`` tool.
+        ``"sql"``                 — returns the ``execute_sql`` tool.
+
+    Returns
+    -------
+    list[dict]
+        List of Anthropic tool schema dicts ready for the ``tools=`` parameter.
+    """
+    if mode == "sql":
+        return [_SQL_TOOL]
+    return [_PYTHON_TOOL]
+
+
+def dispatch_tool(
+    name: str,
+    tool_input: dict,
+    df: pd.DataFrame | None = None,
+    sql_engine: Any | None = None,
+) -> ExecutionResult:
     """Route a tool call to its implementation.
 
-    Returns an ExecutionResult (error field set for unknown tools).
+    Parameters
+    ----------
+    name:
+        Tool name from the API response block.
+    tool_input:
+        Tool input dict from the API response block.
+    df:
+        DataFrame for DataFrame mode; ignored in SQL mode.
+    sql_engine:
+        SQLAlchemy engine for SQL mode; ignored in DataFrame mode.
+
+    Returns
+    -------
+    ExecutionResult
+        Error field is set for unknown tools or routing failures.
     """
     if name == "execute_python":
+        if df is None:
+            return ExecutionResult(
+                stdout="",
+                error="No DataFrame available for execute_python.",
+                figures=(),
+                summary="ERROR: No DataFrame loaded.",
+            )
         code = tool_input.get("code", "")
         return execute_python(code, df)
+
+    if name == "execute_sql":
+        if sql_engine is None:
+            return ExecutionResult(
+                stdout="",
+                error="No SQL engine available for execute_sql.",
+                figures=(),
+                summary="ERROR: No SQL connection active.",
+            )
+        from src.db.executor import execute_sql
+        query = tool_input.get("query", "")
+        return execute_sql(sql_engine, query)
 
     return ExecutionResult(
         stdout="",
