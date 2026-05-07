@@ -75,38 +75,48 @@ def execute_python(code: str, df: pd.DataFrame) -> ExecutionResult:
 
 
 def _apply_style(fig: go.Figure) -> None:
-    """Mutate a Plotly figure in-place with transparent background and auto-sized height.
+    """Mutate a Plotly figure in-place:
 
-    - Transparent canvas so the chart blends with any Streamlit theme.
-    - Height is computed from the data so dense charts aren't squashed and
-      sparse charts don't waste vertical space.
+    - Transparent canvas (blends with any Streamlit theme)
+    - Width computed from bar count so each bar has a fixed pixel footprint
+    - Height computed from category count so charts are never squashed
+    - Bar text labels removed — values appear only on hover
     """
-    height = _compute_height(fig)
+    height, width = _compute_dimensions(fig)
+
+    # autosize=False + explicit width gives a fixed-size canvas; Streamlit will
+    # centre it if narrower than the column.
     fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",   # outer canvas transparent
-        plot_bgcolor="rgba(0,0,0,0)",    # inner plot area transparent
-        autosize=True,                   # width fills the Streamlit column
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        autosize=False,
+        width=width,
         height=height,
-        margin={"t": 60, "b": 60, "l": 60, "r": 30},
+        margin={"t": 60, "b": 60, "l": 70, "r": 30},
         font={"size": 13},
         hoverlabel={"font_size": 13},
     )
-    # Keep grid lines subtle so they're visible on both light and dark themes
     fig.update_xaxes(gridcolor="rgba(128,128,128,0.2)", zerolinecolor="rgba(128,128,128,0.3)")
     fig.update_yaxes(gridcolor="rgba(128,128,128,0.2)", zerolinecolor="rgba(128,128,128,0.3)")
 
+    # Strip bar labels — show values on hover only
+    for trace in fig.data:
+        if isinstance(trace, go.Bar):
+            trace.update(text=None, texttemplate="")
 
-def _compute_height(fig: go.Figure) -> int:
-    """Return a height in pixels that fits the figure's data.
 
-    Rules (applied in order):
-    - Horizontal bar chart: 40px per category, min 300, max 800
-    - Heatmap: 35px per y-tick, min 350, max 900
-    - Everything else: 420px (compact default that suits most line/scatter/bar charts)
+def _compute_dimensions(fig: go.Figure) -> tuple[int, int]:
+    """Return (height, width) in pixels sized to the figure's data.
+
+    Bar charts:
+      Vertical   — width = 120px × n_bars + margins; height fixed at 420
+      Horizontal — height = 40px × n_bars + margins; width fixed at 650
+    Heatmap      — height = 35px × n_rows + margins; width fixed at 750
+    Everything else — 420 × 750 (reasonable default, autosize via Streamlit)
     """
     traces = fig.data
     if not traces:
-        return 420
+        return 420, 750
 
     first = traces[0]
 
@@ -114,21 +124,23 @@ def _compute_height(fig: go.Figure) -> int:
     if getattr(first, "orientation", None) == "h":
         y_vals = getattr(first, "y", None)
         n = len(y_vals) if y_vals is not None else 5
-        return max(300, min(800, n * 40 + 80))
+        return max(300, min(800, n * 40 + 100)), 650
 
     # Heatmap
     if isinstance(first, go.Heatmap):
         y_vals = getattr(first, "y", None)
         n = len(y_vals) if y_vals is not None else 8
-        return max(350, min(900, n * 35 + 80))
+        return max(350, min(900, n * 35 + 100)), 750
 
-    # Vertical bar — scale slightly with category count
+    # Vertical bar — width grows with the number of bars
     if isinstance(first, go.Bar):
         x_vals = getattr(first, "x", None)
         n = len(x_vals) if x_vals is not None else 5
-        return max(350, min(600, 300 + n * 15))
+        width = max(350, min(1400, n * 120 + 150))
+        return 420, width
 
-    return 420
+    # Scatter, line, pie, etc. — use a comfortable fixed size
+    return 420, 750
 
 
 def _build_summary(stdout: str, chart_count: int, error: str | None) -> str:
