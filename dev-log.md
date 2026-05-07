@@ -111,3 +111,182 @@ The retry logic (lines 25–38) handles `anthropic.APIStatusError` with status c
 - Suggested questions from EDA findings
 - `tests/test_auto_eda.py` (Titanic fixture)
 - Smoke test: Sales Excel → EDA renders on upload
+
+---
+
+## Session 2 — 2026-05-07: Bug Fixes, Plotly Integration & UI Redesign
+
+### Summary
+Live-tested the v1 app, found and fixed a duplicate-response bug, upgraded charts from static
+matplotlib PNGs to interactive Plotly figures, iteratively refined chart aesthetics through three
+rounds of user feedback, and redesigned the full UI with a dark theme, welcome screen, dataset
+stats bar, and suggestion chips.
+
+---
+
+### [MISTAKE] Duplicate assistant responses on every query
+Every query produced two identical responses in the chat panel. Root cause: `run_agent_turn()`
+already appends the full assistant message (including tool_use blocks) to `history` and returns the
+updated list. `app.py` had an additional conditional block:
+
+```python
+# BUG — always True when content is a list of blocks
+if not isinstance(result.final_text, str): ...
+    messages.append({"role": "assistant", "content": result.final_text})
+```
+
+The condition `not isinstance(content, str)` is always True when `content` is a list, so a second
+plain-text copy was appended on every turn. `render_chat_history()` then rendered both.
+
+---
+
+### [FIX] Removed redundant message append in `app.py`
+Deleted the extra append block entirely. The loop owns the message history — `app.py` only
+writes `result.messages` (the loop's authoritative copy) back into session state. No other
+changes were required.
+
+---
+
+### [DECISION] Plotly as primary chart format; matplotlib PNG as fallback only
+After seeing the static PNG bar chart in v1, switched to interactive Plotly. Design rationale:
+- User can hover, zoom, pan on any chart without leaving Streamlit
+- Plotly figures travel as JSON strings through `ExecutionResult.plotly_figures`, safe to store
+  in session state and re-render without re-executing code
+- Matplotlib PNG fallback preserved so hand-crafted `plt.savefig()` code still works
+
+Implementation: executor scans the post-exec namespace for `go.Figure` instances, serialises
+each with `pio.to_json()`. The matplotlib path fires only if no Plotly figures were found.
+`ExecutionResult` gained `plotly_figures: tuple[str, ...] = field(default=())`. `TurnResult`
+propagates the field. System prompt updated to strongly prefer `px`/`go` and require assigning
+the figure to a variable (`fig = px.bar(...)`).
+
+---
+
+### [DECISION] `_apply_style()` post-processes every Plotly figure inside the executor
+Rather than relying on the agent to write aesthetically correct styling code (unreliable and
+verbose in prompts), the executor applies a fixed style pass after every `exec()`:
+
+- Transparent canvas: `paper_bgcolor="rgba(0,0,0,0)"`, `plot_bgcolor="rgba(0,0,0,0)"`
+- Computed dimensions via `_compute_dimensions()` (see separate entry)
+- `bargap=0.55` so each bar occupies ~30% of its category slot (narrow, uncluttered)
+- Strips bar text labels: `trace.update(text=None, texttemplate="")` — values on hover only
+- `hoverlabel={"namelength": -1}` — never truncate column names in hover text
+
+Agent-generated code need not contain any styling at all. This decouples analysis logic from
+presentation and makes chart quality consistent regardless of what the agent writes.
+
+---
+
+### [MISTAKE] Hover tooltip truncated long column names
+Plotly's default `hoverlabel.namelength = 15` silently clips names longer than 15 characters
+and appends a tilde (`~`). A column named "Avg Daily Social Media Hours" appeared as
+"Avg Daily Social Media Hours~" in the hover tooltip — easy to miss and confusing to users.
+
+---
+
+### [FIX] `hoverlabel={"namelength": -1}` in `_apply_style()`
+Setting `namelength` to `-1` disables Plotly's truncation entirely. Full column names now
+appear in hover labels. One-liner fix in `python_executor.py`.
+
+---
+
+### [MISTAKE] `use_container_width=True` overrode the explicit figure pixel width
+`st.plotly_chart(fig, use_container_width=True)` stretches the figure to fill the Streamlit
+column (~1200 px on wide layout) regardless of the `width` set in `fig.layout`. All bars
+appeared wide even though `_compute_dimensions()` had computed a narrower target (e.g. 520 px
+for 5 bars). The explicit width was computed but then discarded by Streamlit's own scaling.
+
+---
+
+### [FIX] `use_container_width=False` + column-padding centring in `_render_plotly_centred()`
+Added `_render_plotly_centred(fig)` in `src/ui/chat_panel.py`:
+
+```python
+COLUMN_PX = 900  # conservative estimate of content column width
+pad = max(0, COLUMN_PX - chart_px) // 2
+col_left, col_mid, col_right = st.columns([pad, chart_px, pad])
+with col_mid:
+    st.plotly_chart(fig, use_container_width=False)
+```
+
+Charts now render at their natural pixel width, visually centred in the content area.
+When the chart is wider than `COLUMN_PX`, it falls back to `use_container_width=False` without
+padding (Streamlit will clip or scroll as appropriate).
+
+---
+
+### [DECISION] `_compute_dimensions()` sizes charts to data density
+Four rules cover the common chart types:
+
+| Chart type | Height | Width |
+|------------|--------|-------|
+| Horizontal bar | `max(300, min(800, n × 40 + 100))` | 650 px fixed |
+| Heatmap | `max(350, min(900, n × 35 + 100))` | 750 px fixed |
+| Vertical bar | 400 px fixed | `max(280, min(1000, n × 60 + 130))` |
+| Everything else | 420 px | 750 px |
+
+Where `n` is the number of bars/rows. The per-bar/row pixel allocations were tuned empirically:
+40 px/row for horizontal (readable label + bar), 60 px/bar for vertical (breathing room with
+`bargap=0.55`). Clamped ranges prevent degenerate sizes for very small or very large datasets.
+
+---
+
+### [IMPROVEMENT] Full UI redesign — `src/ui/styles.py` + `app.py` rewrite
+Introduced a global CSS injection module (`inject()` called once in `main()`):
+
+**Design language:** Dark theme (`#111120` main, `#0e0e1a` sidebar), translucent glass-effect
+cards with `rgba(255,255,255,0.04)` fill and `rgba(255,255,255,0.08)` borders, purple hover
+glow (`rgba(120,120,255,0.35)`) on interactive elements.
+
+**New UI components:**
+
+- *Welcome screen* (`_render_welcome()`): centred headline, subtitle, 3 feature cards
+  (Upload / Ask / Discover) via raw HTML `<div class="feature-card">` — not Streamlit columns
+  because Streamlit columns don't support variable-height card styling
+- *Dataset stats bar* (`_render_dataset_stats()`): 4 `st.metric` cards — Rows, Columns,
+  Numeric cols, Missing cells — shown above the chat after a file is uploaded
+- *Suggestion chips* (`_render_suggestions()`): 5 pill-button questions shown when chat is
+  empty. Each maps to a canned question; clicking stores it in `session_state.pending_query`
+  and calls `st.rerun()`
+- *Sidebar* restructured into 3 labelled sections: 🔑 API Key · 📁 Data Source · 🔍 Preview
+  (5-row dataframe), plus a "Clear & upload new file" reset button
+
+---
+
+### [INSIGHT] `st.chat_input` cannot be pre-filled programmatically
+Streamlit provides no API to inject text into the chat input widget. The suggestion chip
+workaround: store the chosen question in `st.session_state.pending_query`, call `st.rerun()`,
+then check for `pending_query` at the top of the main render loop (before `st.chat_input` is
+evaluated). If set, clear it, run the agent turn, and return — the user never touches the input.
+
+---
+
+### [FIX] Corrected Windows Long Paths note from Session 1
+The Session 1 entry referenced `gpedit.msc` (Group Policy Editor) as the fix for the
+`pip install streamlit` failure on Windows. That tool is not available on Windows Home edition.
+The registry method works on all Windows 10/11 editions:
+
+```powershell
+# Must be run in PowerShell as Administrator (not cmd.exe):
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+  -Name LongPathsEnabled -Value 1
+```
+
+Running in `cmd.exe` returns "not recognized as an internal or external command".
+
+---
+
+### Session 2 Changes Summary
+
+| Area | Change |
+|------|--------|
+| `app.py` | Removed duplicate message append; added welcome screen, stats bar, suggestion chips, sidebar restructure |
+| `src/execution/result.py` | Added `plotly_figures: tuple[str, ...]` field |
+| `src/execution/python_executor.py` | Plotly figure scanning, `_apply_style()`, `_compute_dimensions()` |
+| `src/agent/system_prompt.py` | Prefer Plotly instruction added |
+| `src/agent/tools.py` | Tool description updated to mention `go`, `px` |
+| `src/agent/loop.py` | `TurnResult` gains `plotly_figures`; loop propagates from tool results |
+| `src/ui/styles.py` | New file — global CSS injection |
+| `src/ui/chat_panel.py` | `render_turn_figures()` renders Plotly first; `_render_plotly_centred()` added |
+
+### Next: v2 (Week 3) — unchanged from Session 1 plan
