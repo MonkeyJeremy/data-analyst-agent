@@ -290,3 +290,117 @@ Running in `cmd.exe` returns "not recognized as an internal or external command"
 | `src/ui/chat_panel.py` | `render_turn_figures()` renders Plotly first; `_render_plotly_centred()` added |
 
 ### Next: v2 (Week 3) — unchanged from Session 1 plan
+
+---
+
+## Session 3 — 2026-05-07: v2 Automated EDA on Upload
+
+### Summary
+Implemented the full v2 EDA pipeline: `EDAReport` dataclass, `run_auto_eda()` computation,
+`render_eda_panel()` Streamlit UI, 22 new tests (all passing), `sales.xlsx` fixture, and
+5 targeted edits to `app.py`. Total test count: 55, all green. EDA coverage: 97%.
+
+---
+
+### [DECISION] EDA computation uses only pandas/numpy — no scipy
+All EDA statistics needed (skewness, IQR, correlation, missing pct) are available directly
+in pandas/numpy. Adding scipy would have been an extra dependency for zero benefit.
+`df.skew()`, `df.corr()`, `df.quantile()`, `df.isnull().mean()` cover everything required.
+
+---
+
+### [DECISION] `EDAReport` stores only plain immutable types
+The frozen dataclass uses `tuple[tuple[str, float], ...]` instead of `pd.Series` or
+`pd.DataFrame`. This makes `EDAReport`:
+- Truly hashable (frozen dataclass guarantee holds)
+- Safe to store in Streamlit session state without serialisation issues
+- Testable without DataFrame comparison helpers
+
+---
+
+### [DECISION] `_apply_style()` in executor vs `_eda_fig_style()` in EDA panel
+Two separate style helpers exist for a reason:
+- `_apply_style()` (executor): strips bar text labels and applies `bargap=0.55` because
+  agent-generated charts should be minimal — values on hover only.
+- `_eda_fig_style()` (eda_panel): keeps bar labels visible because EDA charts are
+  read at a glance, not interactively explored. Bar heights and heatmap cell values
+  should be immediately readable without hovering.
+
+---
+
+### [DECISION] Suggestion chips personalised from EDA findings
+The 5 generic chip questions were replaced with dynamically-generated questions built
+from actual findings. Priority order: top correlation pair → top missing column →
+most skewed column → most outlier column → always "Give me a summary".
+Falls back to generics if EDA finds nothing notable.
+
+---
+
+### [MISTAKE] `_compute_outliers()` skipped IQR=0 columns entirely
+When 20+ values were identical and one extreme outlier existed, Q1=Q3 so IQR=0.
+The guard `if iqr == 0: continue` caused the column to be silently ignored.
+The outlier test caught this immediately.
+
+---
+
+### [FIX] Z-score fallback when IQR=0
+When `iqr == 0`, fall back to z-score: count values more than 3 standard deviations
+from the mean. If `std == 0` as well, it's a truly constant numeric column (already
+caught by `constant_cols`) — skip. This handles the case where most values are
+identical but extreme outliers exist.
+
+---
+
+### [INSIGHT] `eda_summary` hook was already wired in v1
+`system_prompt.py` (`build_system_prompt(schema, eda_summary=None)`) and `loop.py`
+(`run_agent_turn(..., eda_summary=None)`) both already had the optional parameter.
+v2 only needed to populate it — zero changes to those files. Designing the hook
+during v1 made the v2 integration a 5-line change in `app.py`.
+
+---
+
+### [DECISION] EDA panel collapsed by default (`expanded=False`)
+The panel is available immediately after upload but not forced onto the user.
+Power users can expand it; beginners can ignore it and use the suggestion chips.
+The chips surface the most interesting findings as actionable questions.
+
+---
+
+### [TRADEOFF] `sales.xlsx` generated at test time via conftest, not committed as binary
+A committed `.xlsx` binary is opaque to git diff and carries no history. Using a
+`session`-scoped autouse fixture that generates the file once per test run keeps the
+repo clean. The fixture is idempotent (skips generation if file already exists).
+
+---
+
+### Coverage Summary (v2)
+
+| Module | Coverage |
+|--------|----------|
+| `src/eda/auto_eda.py` | 97% |
+| `src/eda/report.py` | 100% |
+| `src/agent/loop.py` | 96% |
+| `src/agent/tools.py` | 100% |
+| `src/data/loader.py` | 92% |
+| `src/data/schema.py` | 81% |
+| `src/execution/python_executor.py` | 63% ← Plotly path hard to unit-test |
+| `src/ui/*`, `src/eda/eda_panel.py` | excluded (Streamlit, requires browser) |
+
+---
+
+### v2 Completed Checklist
+
+- [x] `src/eda/__init__.py` — package marker
+- [x] `src/eda/report.py` — `EDAReport` frozen dataclass
+- [x] `src/eda/auto_eda.py` — `run_auto_eda(df)` pure function
+- [x] `src/ui/eda_panel.py` — tabbed EDA panel (Overview / Distributions / Correlations)
+- [x] `app.py` — 6 edits: imports, session key, upload hook, suggestions, panel render, eda_summary pass-through
+- [x] `tests/test_auto_eda.py` — 22 tests, 97% coverage
+- [x] `tests/conftest.py` — `sales_xlsx` session-scoped autouse fixture
+- [x] All 55 tests passing
+
+### Next: v3 (Week 4)
+- SQLite support: `src/db/connection.py`, `src/db/executor.py`
+- New tool: `execute_sql(query)` alongside `execute_python`
+- Schema injection updated for table schema
+- Smoke test: upload CSV → agent writes SQL to answer questions

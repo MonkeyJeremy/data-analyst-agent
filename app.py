@@ -9,7 +9,9 @@ from src.agent.client import LLMClient
 from src.agent.loop import run_agent_turn
 from src.data.loader import load_tabular
 from src.data.schema import describe_schema
+from src.eda.auto_eda import run_auto_eda
 from src.ui.chat_panel import render_chat_history, render_turn_figures
+from src.ui.eda_panel import render_eda_panel
 from src.ui.styles import inject
 from src.ui.upload_panel import render_file_upload
 
@@ -36,6 +38,7 @@ def _init_session_state() -> None:
     defaults: dict = {
         "df": None,
         "schema": None,
+        "eda": None,             # EDAReport computed on upload
         "messages": [],
         "last_figures": (),
         "last_plotly_figures": (),
@@ -90,7 +93,7 @@ def _render_sidebar() -> str:
             # Reset button
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🗑️  Clear & upload new file", use_container_width=True):
-                for key in ("df", "schema", "messages", "last_figures",
+                for key in ("df", "schema", "eda", "messages", "last_figures",
                             "last_plotly_figures", "_last_filename"):
                     st.session_state[key] = None if key not in ("messages",) else []
                 st.session_state.last_figures = ()
@@ -110,6 +113,7 @@ def _handle_upload(uploaded: object) -> None:
         ):
             st.session_state.df = df
             st.session_state.schema = schema
+            st.session_state.eda = run_auto_eda(df)
             st.session_state.messages = []
             st.session_state.last_figures = ()
             st.session_state.last_plotly_figures = ()
@@ -181,14 +185,20 @@ def _render_dataset_stats() -> None:
 # ── Suggestion chips ──────────────────────────────────────────────────────────
 
 def _render_suggestions() -> None:
-    """Show clickable example questions. Sets session_state.pending_query on click."""
+    """Show clickable example questions. Sets session_state.pending_query on click.
+
+    Uses EDA-derived questions when available; falls back to generic defaults.
+    """
+    eda = st.session_state.get("eda")
+    questions = list(eda.suggested_questions) if eda else _DEFAULT_SUGGESTIONS
+
     st.markdown(
         "<p style='opacity:0.45;font-size:0.82rem;margin-bottom:0.5rem'>"
         "💡 Try asking…</p>",
         unsafe_allow_html=True,
     )
-    cols = st.columns(len(_DEFAULT_SUGGESTIONS))
-    for col, question in zip(cols, _DEFAULT_SUGGESTIONS):
+    cols = st.columns(len(questions))
+    for col, question in zip(cols, questions):
         with col:
             st.markdown('<div class="suggestion-btn">', unsafe_allow_html=True)
             if st.button(question, key=f"sug_{question[:30]}"):
@@ -205,11 +215,17 @@ def _run_query(prompt: str, api_key: str) -> None:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.spinner("🤔 Analysing…"):
         try:
+            eda_summary = (
+                st.session_state.eda.narrative
+                if st.session_state.get("eda") is not None
+                else None
+            )
             result = run_agent_turn(
                 client=LLMClient(api_key=api_key),
                 messages=st.session_state.messages,
                 df=st.session_state.df,
                 schema=st.session_state.schema,
+                eda_summary=eda_summary,
             )
             st.session_state.messages = result.messages
             st.session_state.last_figures = result.figures
@@ -234,6 +250,10 @@ def main() -> None:
         return
 
     _render_dataset_stats()
+
+    # EDA panel — collapsed by default, available immediately after upload
+    if st.session_state.eda is not None:
+        render_eda_panel(st.session_state.eda, st.session_state.df)
 
     # Show suggestions only when chat is empty
     if not st.session_state.messages:
