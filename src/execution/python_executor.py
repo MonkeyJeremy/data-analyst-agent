@@ -94,10 +94,15 @@ def _apply_style(fig: go.Figure) -> None:
         height=height,
         margin={"t": 60, "b": 60, "l": 70, "r": 30},
         font={"size": 13},
-        hoverlabel={"font_size": 13},
+        hoverlabel={"font_size": 13, "namelength": -1},  # -1 = never truncate hover text
     )
     fig.update_xaxes(gridcolor="rgba(128,128,128,0.2)", zerolinecolor="rgba(128,128,128,0.3)")
     fig.update_yaxes(gridcolor="rgba(128,128,128,0.2)", zerolinecolor="rgba(128,128,128,0.3)")
+
+    # Narrow bars: large gap so bars occupy ~30% of their slot
+    has_bars = any(isinstance(t, go.Bar) for t in fig.data)
+    if has_bars:
+        fig.update_layout(bargap=0.55, bargroupgap=0.1)
 
     # Strip bar labels — show values on hover only
     for trace in fig.data:
@@ -132,12 +137,12 @@ def _compute_dimensions(fig: go.Figure) -> tuple[int, int]:
         n = len(y_vals) if y_vals is not None else 8
         return max(350, min(900, n * 35 + 100)), 750
 
-    # Vertical bar — width grows with the number of bars
+    # Vertical bar — 60 px per bar keeps bars narrow; bargap set separately
     if isinstance(first, go.Bar):
         x_vals = getattr(first, "x", None)
         n = len(x_vals) if x_vals is not None else 5
-        width = max(350, min(1400, n * 120 + 150))
-        return 420, width
+        width = max(280, min(1000, n * 60 + 130))
+        return 400, width
 
     # Scatter, line, pie, etc. — use a comfortable fixed size
     return 420, 750

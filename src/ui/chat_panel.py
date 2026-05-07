@@ -65,14 +65,50 @@ def render_turn_figures(
     """Render charts produced during the latest agent turn.
 
     Plotly figures (interactive) are rendered first; matplotlib PNGs are the fallback.
+    Charts are centred at their natural pixel width rather than stretched to fill the column.
     """
     for fig_json in plotly_figures:
         try:
             import plotly.io as pio
             fig = pio.from_json(fig_json)
-            st.plotly_chart(fig, use_container_width=True)
+            _render_plotly_centred(fig)
         except Exception:
             st.warning("Could not render interactive chart.")
 
     for fig_bytes in figures:
-        st.image(fig_bytes, use_container_width=True)
+        st.image(fig_bytes, use_container_width=False)
+
+
+def _render_plotly_centred(fig: object) -> None:
+    """Render a Plotly figure at its natural width, centred in the column.
+
+    Streamlit has no native centering option for st.plotly_chart, so we read
+    the width from the figure layout and pad with empty columns on each side.
+    The main Streamlit content column is ~730 px wide (layout="wide" gives
+    more, but we use a conservative estimate so maths stays simple).
+    """
+    import plotly.graph_objects as go
+
+    COLUMN_PX = 900  # conservative estimate of available content width
+
+    layout_width = getattr(getattr(fig, "layout", None), "width", None)
+    chart_px = int(layout_width) if layout_width else COLUMN_PX
+
+    if chart_px >= COLUMN_PX:
+        # Chart fills the column — no padding needed
+        st.plotly_chart(fig, use_container_width=False)
+        return
+
+    # Build column ratios so the chart sits in the centre
+    pad = max(0, COLUMN_PX - chart_px) // 2
+    left_w = pad
+    right_w = pad
+    mid_w = chart_px
+
+    if left_w < 20:
+        st.plotly_chart(fig, use_container_width=False)
+        return
+
+    col_left, col_mid, col_right = st.columns([left_w, mid_w, right_w])
+    with col_mid:
+        st.plotly_chart(fig, use_container_width=False)
