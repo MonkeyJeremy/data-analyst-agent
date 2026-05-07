@@ -404,3 +404,92 @@ repo clean. The fixture is idempotent (skips generation if file already exists).
 - New tool: `execute_sql(query)` alongside `execute_python`
 - Schema injection updated for table schema
 - Smoke test: upload CSV → agent writes SQL to answer questions
+
+---
+
+## Session 4 — 2026-05-07: Non-Standard Layout Detection
+
+### Summary
+Implemented automatic detection of non-standard Excel/CSV layouts (multi-row headers, blank leading
+rows, numeric column names). Files like `QC Sales.xlsx` now either auto-fix silently or show a
+header-row selector with a live preview before EDA runs. 16 new tests, all green. Total: 71.
+
+---
+
+### [DECISION] Detection before EDA — never run EDA on a mis-parsed DataFrame
+The detection step runs inside `_handle_upload()` before `_commit_upload()` (which runs schema +
+EDA). Running EDA on a DataFrame with 97 `Unnamed:` columns produces misleading results (near-zero
+numeric count, meaningless correlations). Detection is cheap (two pandas reads of the same file);
+EDA is expensive and semantically meaningless on the wrong data.
+
+---
+
+### [DECISION] Two-signal suspicious-layout test: unnamed ratio + numeric column name ratio
+Standard "Unnamed:" detection misses the case where a file has an all-numeric first row (e.g.
+`[1, 2, 3, 4, 5]`). Pandas uses those integers as column names — no "Unnamed:" prefix, but equally
+uninformative. Added `_numeric_colname_ratio()` as a second signal; `effective_ratio` is the max
+of the two. This caught the edge case in `test_low_confidence_needs_confirmation`.
+
+---
+
+### [DECISION] Auto-fix vs. needs_confirmation threshold: named_ratio > 0.70 AND score > 0.65
+Chosen to err on the side of confirming rather than silently fixing. A file that is 70% named after
+re-loading is clearly better, but we want high confidence (score > 0.65) before silently applying.
+If either threshold isn't met the user gets the selector, which adds one click but prevents
+surprising silent changes to business-critical files.
+
+---
+
+### [MISTAKE] `candidate_rows = ()` for all-blank file
+When an xlsx with all-None cells is read with `header=None`, pandas returns 0 rows (openpyxl skips
+trailing/leading empty rows). `scan_up_to = min(10, 0) = 0`, so `tuple(range(0)) = ()`.
+The test `test_candidate_rows_returned_on_confirmation` caught this immediately.
+
+---
+
+### [FIX] `fallback_n = max(scan_up_to, min(4, n_rows))` when no candidates found
+When `n_rows == 0`, `fallback_n = max(0, min(4, 0)) = 0` still. Added special case: if `n_rows > 0`
+use `max(scan_up_to, min(4, n_rows))`; otherwise use 4 as absolute fallback. Ensures
+`candidate_rows` always has at least 1 entry when status is needs_confirmation.
+
+---
+
+### [DECISION] `_commit_upload()` extracted as a separate helper
+Previously all the `st.session_state` mutations were inlined in `_handle_upload()`. Extracting
+`_commit_upload(df, filename)` let both the auto-fix path (inside `_handle_upload`) and the
+confirmation path (inside `main()` after user clicks Apply) share identical state-mutation logic.
+No duplication, single source of truth.
+
+---
+
+### [DECISION] Cancel button resets `_last_filename` so the user can re-upload
+If the user clicks Cancel, we clear `_last_filename` as well as `_layout_result` and
+`_layout_file_bytes`. Without clearing `_last_filename`, the same filename would be seen as
+"already processed" on the next upload attempt and `_handle_upload()` would return early.
+
+---
+
+### [INSIGHT] Streamlit file_uploader re-fires on every render cycle
+`render_file_upload()` returns an `UploadedFile` object on every render as long as a file is
+selected — not just on the first upload. The `_last_filename` guard in `_handle_upload()` prevents
+re-running detection and re-loading on every cycle. This guard was already present for the normal
+path; the layout detection path needs it equally.
+
+---
+
+### Coverage Summary (Session 4)
+
+| Module | Coverage |
+|--------|----------|
+| `src/data/layout.py` | 88% |
+| `src/data/loader.py` | 95% |
+| All previous modules | unchanged |
+
+### Session 4 Completed Checklist
+
+- [x] `src/data/layout.py` — `LayoutResult` dataclass + `detect_layout()` + `preview_row()`
+- [x] `src/data/loader.py` — extended with `header` / `skiprows` params
+- [x] `src/ui/layout_panel.py` — info banner + confirmation UI with live preview
+- [x] `app.py` — 5 edits: imports, session keys, `_commit_upload()`, `_handle_upload()` rewrite, main() gate + clear button
+- [x] `tests/test_layout.py` — 16 tests, 88% coverage
+- [x] All 71 tests passing

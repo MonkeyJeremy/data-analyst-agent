@@ -5,13 +5,17 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
+import io
+
 from src.agent.client import LLMClient
 from src.agent.loop import run_agent_turn
+from src.data.layout import detect_layout
 from src.data.loader import load_tabular
 from src.data.schema import describe_schema
 from src.eda.auto_eda import run_auto_eda
 from src.ui.chat_panel import render_chat_history, render_turn_figures
 from src.ui.eda_panel import render_eda_panel
+from src.ui.layout_panel import _CANCEL_SENTINEL, render_layout_panel
 from src.ui.styles import inject
 from src.ui.upload_panel import render_file_upload
 
@@ -38,12 +42,14 @@ def _init_session_state() -> None:
     defaults: dict = {
         "df": None,
         "schema": None,
-        "eda": None,             # EDAReport computed on upload
+        "eda": None,                 # EDAReport computed on upload
         "messages": [],
         "last_figures": (),
         "last_plotly_figures": (),
         "_last_filename": None,
-        "pending_query": None,   # set by suggestion chips
+        "pending_query": None,       # set by suggestion chips
+        "_layout_result": None,      # LayoutResult from last detection
+        "_layout_file_bytes": None,  # raw bytes held for user confirmation
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -94,7 +100,8 @@ def _render_sidebar() -> str:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🗑️  Clear & upload new file", use_container_width=True):
                 for key in ("df", "schema", "eda", "messages", "last_figures",
-                            "last_plotly_figures", "_last_filename"):
+                            "last_plotly_figures", "_last_filename",
+                            "_layout_result", "_layout_file_bytes"):
                     st.session_state[key] = None if key not in ("messages",) else []
                 st.session_state.last_figures = ()
                 st.session_state.last_plotly_figures = ()
@@ -103,22 +110,44 @@ def _render_sidebar() -> str:
     return api_key_input
 
 
+def _commit_upload(df: object, filename: str) -> None:
+    """Persist a successfully loaded DataFrame and run schema + EDA."""
+    schema = describe_schema(df)
+    st.session_state.df = df
+    st.session_state.schema = schema
+    st.session_state.eda = run_auto_eda(df)
+    st.session_state.messages = []
+    st.session_state.last_figures = ()
+    st.session_state.last_plotly_figures = ()
+    st.session_state["_last_filename"] = filename
+    st.session_state.pending_query = None
+
+
 def _handle_upload(uploaded: object) -> None:
+    # Skip if this file is already loaded (or awaiting confirmation)
+    if st.session_state.get("_last_filename") == uploaded.name:
+        return
+
     try:
-        df = load_tabular(uploaded, uploaded.name)
-        schema = describe_schema(df)
-        if (
-            st.session_state.df is None
-            or st.session_state.get("_last_filename") != uploaded.name
-        ):
-            st.session_state.df = df
-            st.session_state.schema = schema
-            st.session_state.eda = run_auto_eda(df)
-            st.session_state.messages = []
-            st.session_state.last_figures = ()
-            st.session_state.last_plotly_figures = ()
-            st.session_state["_last_filename"] = uploaded.name
-            st.session_state.pending_query = None
+        file_bytes = uploaded.read()
+        uploaded.seek(0)  # reset so pandas can read it too
+
+        # Detect layout before loading
+        result = detect_layout(file_bytes, uploaded.name)
+        st.session_state._layout_result = result
+        st.session_state._layout_file_bytes = file_bytes
+        st.session_state["_last_filename"] = uploaded.name
+
+        if result.status == "needs_confirmation":
+            # Don't load yet — main() will render the confirmation panel
+            return
+
+        # auto_fixed or ok: load with detected header row
+        df = load_tabular(
+            io.BytesIO(file_bytes), uploaded.name, header=result.header_row
+        )
+        _commit_upload(df, uploaded.name)
+
     except ValueError as exc:
         st.error(str(exc))
 
@@ -244,6 +273,33 @@ def main() -> None:
     _init_session_state()
 
     api_key_input = _render_sidebar()
+
+    # ── Layout confirmation / auto-fix banner ────────────────────────────────
+    layout_result = st.session_state.get("_layout_result")
+    if layout_result is not None:
+        if layout_result.status == "needs_confirmation":
+            # Show header selector — block normal content until resolved
+            confirmed_df = render_layout_panel(
+                layout_result,
+                st.session_state._layout_file_bytes or b"",
+                st.session_state.get("_last_filename", ""),
+            )
+            if confirmed_df is _CANCEL_SENTINEL:
+                # User cancelled — reset upload state entirely
+                for key in ("_layout_result", "_layout_file_bytes", "_last_filename"):
+                    st.session_state[key] = None
+                st.rerun()
+            elif confirmed_df is not None:
+                _commit_upload(confirmed_df, st.session_state["_last_filename"])
+                st.session_state._layout_result = None
+                st.rerun()
+            else:
+                # Waiting for user to click Apply
+                if st.session_state.df is None:
+                    return  # nothing else to show
+        elif layout_result.status == "auto_fixed":
+            # Non-blocking banner shown inline above the stats bar
+            render_layout_panel(layout_result, b"", "")
 
     if st.session_state.df is None:
         _render_welcome()
