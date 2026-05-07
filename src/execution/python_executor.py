@@ -49,6 +49,7 @@ def execute_python(code: str, df: pd.DataFrame) -> ExecutionResult:
         # Collect Plotly figures from namespace (scan all values)
         for val in namespace.values():
             if isinstance(val, go.Figure):
+                _apply_style(val)
                 plotly_figures.append(pio.to_json(val))
 
         # Fall back to matplotlib only if no Plotly figures were produced
@@ -71,6 +72,63 @@ def execute_python(code: str, df: pd.DataFrame) -> ExecutionResult:
         plotly_figures=tuple(plotly_figures),
         summary=_build_summary(stdout_buf.getvalue(), total_charts, error),
     )
+
+
+def _apply_style(fig: go.Figure) -> None:
+    """Mutate a Plotly figure in-place with transparent background and auto-sized height.
+
+    - Transparent canvas so the chart blends with any Streamlit theme.
+    - Height is computed from the data so dense charts aren't squashed and
+      sparse charts don't waste vertical space.
+    """
+    height = _compute_height(fig)
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",   # outer canvas transparent
+        plot_bgcolor="rgba(0,0,0,0)",    # inner plot area transparent
+        autosize=True,                   # width fills the Streamlit column
+        height=height,
+        margin={"t": 60, "b": 60, "l": 60, "r": 30},
+        font={"size": 13},
+        hoverlabel={"font_size": 13},
+    )
+    # Keep grid lines subtle so they're visible on both light and dark themes
+    fig.update_xaxes(gridcolor="rgba(128,128,128,0.2)", zerolinecolor="rgba(128,128,128,0.3)")
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.2)", zerolinecolor="rgba(128,128,128,0.3)")
+
+
+def _compute_height(fig: go.Figure) -> int:
+    """Return a height in pixels that fits the figure's data.
+
+    Rules (applied in order):
+    - Horizontal bar chart: 40px per category, min 300, max 800
+    - Heatmap: 35px per y-tick, min 350, max 900
+    - Everything else: 420px (compact default that suits most line/scatter/bar charts)
+    """
+    traces = fig.data
+    if not traces:
+        return 420
+
+    first = traces[0]
+
+    # Horizontal bar chart
+    if getattr(first, "orientation", None) == "h":
+        y_vals = getattr(first, "y", None)
+        n = len(y_vals) if y_vals is not None else 5
+        return max(300, min(800, n * 40 + 80))
+
+    # Heatmap
+    if isinstance(first, go.Heatmap):
+        y_vals = getattr(first, "y", None)
+        n = len(y_vals) if y_vals is not None else 8
+        return max(350, min(900, n * 35 + 80))
+
+    # Vertical bar — scale slightly with category count
+    if isinstance(first, go.Bar):
+        x_vals = getattr(first, "x", None)
+        n = len(x_vals) if x_vals is not None else 5
+        return max(350, min(600, 300 + n * 15))
+
+    return 420
 
 
 def _build_summary(stdout: str, chart_count: int, error: str | None) -> str:
