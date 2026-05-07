@@ -107,17 +107,6 @@ def main() -> None:
                 st.session_state.messages = result.messages
                 st.session_state.last_figures = result.figures
 
-                # Append a plain assistant message for final text so the
-                # renderer can display it without re-parsing the raw API blocks
-                if result.final_text and (
-                    not result.messages
-                    or result.messages[-1].get("role") != "assistant"
-                    or not isinstance(result.messages[-1].get("content"), str)
-                ):
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": result.final_text}
-                    )
-
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Agent error: {exc}")
                 # Remove the user message so the user can retry
