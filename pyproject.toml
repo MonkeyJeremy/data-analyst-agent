@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "tabulate>=0.9",
     "sqlalchemy>=2.0",
+    "plotly>=5.0",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import streamlit as st
 
 
@@ -56,7 +58,21 @@ def _render_structured_content(role: str, blocks: list) -> None:
                 st.code(code, language="python")
 
 
-def render_turn_figures(figures: tuple[bytes, ...]) -> None:
-    """Render charts produced during the latest agent turn."""
+def render_turn_figures(
+    figures: tuple[bytes, ...],
+    plotly_figures: tuple[str, ...] = (),
+) -> None:
+    """Render charts produced during the latest agent turn.
+
+    Plotly figures (interactive) are rendered first; matplotlib PNGs are the fallback.
+    """
+    for fig_json in plotly_figures:
+        try:
+            import plotly.io as pio
+            fig = pio.from_json(fig_json)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            st.warning("Could not render interactive chart.")
+
     for fig_bytes in figures:
         st.image(fig_bytes, use_container_width=True)

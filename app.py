@@ -23,6 +23,7 @@ def _init_session_state() -> None:
         "schema": None,
         "messages": [],
         "last_figures": (),
+        "last_plotly_figures": (),
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -83,8 +84,11 @@ def main() -> None:
     render_chat_history(st.session_state.messages)
 
     # Render charts from the most recent turn below the last message
-    if st.session_state.last_figures:
-        render_turn_figures(st.session_state.last_figures)
+    if st.session_state.last_plotly_figures or st.session_state.last_figures:
+        render_turn_figures(
+            st.session_state.last_figures,
+            st.session_state.last_plotly_figures,
+        )
 
     if prompt := st.chat_input("Ask a question about your data…"):
         api_key = _get_api_key(api_key_input)
@@ -106,6 +110,7 @@ def main() -> None:
                 )
                 st.session_state.messages = result.messages
                 st.session_state.last_figures = result.figures
+                st.session_state.last_plotly_figures = result.plotly_figures
 
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Agent error: {exc}")

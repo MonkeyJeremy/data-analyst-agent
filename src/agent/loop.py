@@ -25,8 +25,9 @@ class ToolCallRecord:
 class TurnResult:
     final_text: str
     tool_calls: tuple[ToolCallRecord, ...]
-    messages: list[dict]  # full updated history to persist in session state
-    figures: tuple[bytes, ...]  # all figures from this turn, in order
+    messages: list[dict]        # full updated history to persist in session state
+    figures: tuple[bytes, ...]  # matplotlib PNG fallback figures
+    plotly_figures: tuple[str, ...] = ()  # Plotly JSON figures (preferred)
 
 
 def run_agent_turn(
@@ -45,6 +46,7 @@ def run_agent_turn(
     system = build_system_prompt(schema, eda_summary)
     tool_calls: list[ToolCallRecord] = []
     all_figures: list[bytes] = []
+    all_plotly_figures: list[str] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
         response = client.call(system=system, messages=history, tools=TOOL_SCHEMAS)
@@ -57,6 +59,7 @@ def run_agent_turn(
                 tool_calls=tuple(tool_calls),
                 messages=history,
                 figures=tuple(all_figures),
+                plotly_figures=tuple(all_plotly_figures),
             )
 
         if response.stop_reason == "tool_use":
@@ -76,6 +79,7 @@ def run_agent_turn(
                     )
                 )
                 all_figures.extend(result.figures)
+                all_plotly_figures.extend(result.plotly_figures)
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -98,6 +102,7 @@ def run_agent_turn(
         tool_calls=tuple(tool_calls),
         messages=history,
         figures=tuple(all_figures),
+        plotly_figures=tuple(all_plotly_figures),
     )
 
 

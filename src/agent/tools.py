@@ -10,9 +10,13 @@ TOOL_SCHEMAS: list[dict] = [
         "name": "execute_python",
         "description": (
             "Execute Python code against the user's DataFrame (variable: `df`). "
-            "pandas (pd), numpy (np), matplotlib.pyplot (plt), seaborn (sns) are "
-            "pre-imported. Use print() for text output; use plt.show() or create a "
-            "figure for charts. Do NOT re-read the file. Do NOT use input() or network calls."
+            "Pre-imported: pandas (pd), numpy (np), "
+            "plotly.graph_objects (go), plotly.express (px), "
+            "matplotlib.pyplot (plt), seaborn (sns). "
+            "PREFER plotly (go or px) for all charts — assign the figure to any variable "
+            "and it will be rendered interactively (e.g. `fig = px.bar(...)`). "
+            "Use print() for text output. "
+            "Do NOT re-read the file. Do NOT use input() or network calls."
         ),
         "input_schema": {
             "type": "object",
