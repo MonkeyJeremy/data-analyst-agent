@@ -38,6 +38,7 @@ def run_agent_turn(
     eda_summary: str | None = None,
     sql_engine: Any | None = None,
     sql_schema: tuple | None = None,
+    text_cols: tuple[str, ...] = (),
 ) -> TurnResult:
     """Run one user turn through the bounded ReAct loop.
 
@@ -84,9 +85,10 @@ def run_agent_turn(
     else:
         if schema is None:
             raise ValueError("schema must be provided for DataFrame mode.")
-        system = build_system_prompt(schema, eda_summary)
+        system = build_system_prompt(schema, eda_summary, text_cols=text_cols)
 
-    tools = get_tool_schemas(mode)
+    has_text_cols = bool(text_cols) and not is_sql
+    tools = get_tool_schemas(mode, has_text_cols=has_text_cols)
 
     history = copy.deepcopy(messages)
     tool_calls: list[ToolCallRecord] = []
@@ -119,6 +121,7 @@ def run_agent_turn(
                     block.input,
                     df=df,
                     sql_engine=sql_engine,
+                    client=client,
                 )
                 tool_calls.append(
                     ToolCallRecord(

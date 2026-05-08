@@ -48,6 +48,14 @@ _SQL_SUGGESTIONS = [
     "Are there any obvious relationships between the tables?",
 ]
 
+_TEXT_SUGGESTIONS = [
+    "What is the overall sentiment in the text column?",
+    "What are the most common topics or themes?",
+    "Find examples of strongly negative feedback.",
+    "Classify each entry as positive, negative, or neutral.",
+    "What words appear most frequently?",
+]
+
 
 def _init_session_state() -> None:
     defaults: dict = {
@@ -347,7 +355,12 @@ def _render_suggestions() -> None:
         questions = _SQL_SUGGESTIONS
     else:
         eda = st.session_state.get("eda")
-        questions = list(eda.suggested_questions) if eda else _DEFAULT_SUGGESTIONS
+        if eda and eda.text_cols:
+            questions = _TEXT_SUGGESTIONS
+        elif eda:
+            questions = list(eda.suggested_questions)
+        else:
+            questions = _DEFAULT_SUGGESTIONS
 
     st.markdown(
         "<p style='opacity:0.45;font-size:0.82rem;margin-bottom:0.5rem'>"
@@ -382,17 +395,16 @@ def _run_query(prompt: str, api_key: str) -> None:
                     sql_schema=sql_schema,
                 )
             else:
-                eda_summary = (
-                    st.session_state.eda.narrative
-                    if st.session_state.get("eda") is not None
-                    else None
-                )
+                eda = st.session_state.get("eda")
+                eda_summary = eda.narrative if eda is not None else None
+                text_cols = tuple(eda.text_cols) if eda is not None else ()
                 result = run_agent_turn(
                     client=LLMClient(api_key=api_key),
                     messages=st.session_state.messages,
                     df=st.session_state.df,
                     schema=st.session_state.schema,
                     eda_summary=eda_summary,
+                    text_cols=text_cols,
                 )
             st.session_state.messages = result.messages
             st.session_state.last_figures = result.figures

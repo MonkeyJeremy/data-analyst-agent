@@ -13,18 +13,25 @@ from src.ui.chat_panel import _render_plotly_centred
 def render_eda_panel(eda: EDAReport, df: pd.DataFrame) -> None:
     """Render the automated EDA expander (collapsed by default).
 
-    Shows three tabs — Overview, Distributions, Correlations.
+    Shows three tabs — Overview, Distributions, Correlations — plus an optional
+    fourth "Text" tab when text columns are detected.
     """
     with st.expander("📊 Automated EDA", expanded=False):
-        tab_overview, tab_dist, tab_corr = st.tabs(
-            ["Overview", "Distributions", "Correlations"]
-        )
-        with tab_overview:
+        tab_names = ["📊 Overview", "📈 Distributions", "🔥 Correlations"]
+        if eda.text_cols:
+            tab_names.append("📝 Text")
+
+        tabs = st.tabs(tab_names)
+
+        with tabs[0]:
             _render_overview(eda)
-        with tab_dist:
+        with tabs[1]:
             _render_distributions(eda, df)
-        with tab_corr:
+        with tabs[2]:
             _render_correlations(eda, df)
+        if eda.text_cols:
+            with tabs[3]:
+                _render_text(eda, df)
 
 
 # ── Overview tab ──────────────────────────────────────────────────────────────
@@ -116,6 +123,37 @@ def _render_correlations(eda: EDAReport, df: pd.DataFrame) -> None:
         for a, b, r in eda.top_correlations[:5]:
             bar = "🟩" if r > 0 else "🟥"
             st.markdown(f"- {bar} `{a}` × `{b}` — r = **{r:.3f}**")
+
+
+# ── Text tab ─────────────────────────────────────────────────────────────────
+
+def _render_text(eda: EDAReport, df: pd.DataFrame) -> None:
+    """Render word-frequency bars and length distributions for text columns."""
+    for col, words in eda.top_words:
+        st.markdown(f"**`{col}`** — top words")
+        words_df = pd.DataFrame(list(words), columns=["word", "count"])
+        fig = px.bar(
+            words_df,
+            x="count",
+            y="word",
+            orientation="h",
+            title=f"Most frequent words · {col}",
+            labels={"count": "Count", "word": "Word"},
+        )
+        fig.update_layout(yaxis={"categoryorder": "total ascending"})
+        _eda_fig_style(fig, height=max(250, len(words) * 22 + 60), width=500)
+        st.plotly_chart(fig, use_container_width=False)
+
+        # Word-count distribution alongside
+        length_series = df[col].dropna().str.split().str.len()
+        fig2 = px.histogram(
+            length_series,
+            nbins=20,
+            title=f"Word count distribution · {col}",
+            labels={"value": "Words per entry", "count": "Frequency"},
+        )
+        _eda_fig_style(fig2, height=220, width=420)
+        st.plotly_chart(fig2, use_container_width=False)
 
 
 # ── Shared style helper ───────────────────────────────────────────────────────

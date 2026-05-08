@@ -67,11 +67,44 @@ _SQL_TOOL: dict = {
     },
 }
 
+_TEXT_TOOL: dict = {
+    "name": "analyze_text",
+    "description": (
+        "Analyse a list of text strings using Claude. Returns a structured table with "
+        "a label, confidence, and brief note for each text. "
+        "Use for: sentiment (positive/negative/neutral), topic classification, "
+        "intent detection, custom categories — anything expressible as a labelling task. "
+        "Pass df['col'].dropna().head(30).tolist() to sample a column. Max 50 texts per call."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "texts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of text strings to analyse (max 50).",
+            },
+            "task": {
+                "type": "string",
+                "description": (
+                    "What to analyse. Examples: 'sentiment', 'main topic in 1-3 words', "
+                    "'classify as complaint / praise / neutral', 'extract product name mentioned'."
+                ),
+            },
+            "purpose": {
+                "type": "string",
+                "description": "One-sentence explanation shown to the user.",
+            },
+        },
+        "required": ["texts", "task", "purpose"],
+    },
+}
+
 # Backward-compatible alias (used by existing tests that import TOOL_SCHEMAS directly)
 TOOL_SCHEMAS: list[dict] = [_PYTHON_TOOL]
 
 
-def get_tool_schemas(mode: str = "dataframe") -> list[dict]:
+def get_tool_schemas(mode: str = "dataframe", has_text_cols: bool = False) -> list[dict]:
     """Return the tool list for the given execution *mode*.
 
     Parameters
@@ -79,6 +112,9 @@ def get_tool_schemas(mode: str = "dataframe") -> list[dict]:
     mode:
         ``"dataframe"`` (default) — returns the ``execute_python`` tool.
         ``"sql"``                 — returns the ``execute_sql`` tool.
+    has_text_cols:
+        When ``True`` and *mode* is ``"dataframe"``, also includes the
+        ``analyze_text`` tool.
 
     Returns
     -------
@@ -87,6 +123,8 @@ def get_tool_schemas(mode: str = "dataframe") -> list[dict]:
     """
     if mode == "sql":
         return [_SQL_TOOL]
+    if has_text_cols:
+        return [_PYTHON_TOOL, _TEXT_TOOL]
     return [_PYTHON_TOOL]
 
 
@@ -95,6 +133,7 @@ def dispatch_tool(
     tool_input: dict,
     df: pd.DataFrame | None = None,
     sql_engine: Any | None = None,
+    client: Any | None = None,
 ) -> ExecutionResult:
     """Route a tool call to its implementation.
 
@@ -114,6 +153,21 @@ def dispatch_tool(
     ExecutionResult
         Error field is set for unknown tools or routing failures.
     """
+    if name == "analyze_text":
+        if client is None:
+            return ExecutionResult(
+                stdout="",
+                error="No LLM client available for analyze_text.",
+                figures=(),
+                summary="ERROR: No LLM client provided.",
+            )
+        from src.text.analyzer import analyze_text_batch
+        return analyze_text_batch(
+            client,
+            tool_input.get("texts", []),
+            tool_input.get("task", ""),
+        )
+
     if name == "execute_python":
         if df is None:
             return ExecutionResult(

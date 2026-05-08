@@ -3,7 +3,11 @@ from __future__ import annotations
 from src.data.schema import SchemaContext
 
 
-def build_system_prompt(schema: SchemaContext, eda_summary: str | None = None) -> str:
+def build_system_prompt(
+    schema: SchemaContext,
+    eda_summary: str | None = None,
+    text_cols: tuple[str, ...] = (),
+) -> str:
     """Build the system prompt for DataFrame mode (execute_python tool)."""
     prompt = f"""\
 You are a senior data analyst pair-programming with a user.
@@ -32,6 +36,17 @@ INSTRUCTIONS:
 
     if eda_summary:
         prompt += f"\n\nPRE-COMPUTED EDA INSIGHTS:\n{eda_summary[:4000]}"
+
+    if text_cols:
+        cols_str = ", ".join(f"'{c}'" for c in text_cols)
+        prompt += f"""
+
+TEXT ANALYSIS:
+The following columns contain free-form text: {cols_str}
+You have access to the analyze_text tool. Use it when the user asks about sentiment,
+topics, tone, intent, or any text classification task.
+Workflow: sample the column first with df['col'].dropna().head(30).tolist(), then call
+analyze_text with those texts and a clear task description."""
 
     return prompt
 

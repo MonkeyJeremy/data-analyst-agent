@@ -2,6 +2,66 @@
 
 ---
 
+## Session 6 — 2026-05-07: v4 Text Analysis
+
+### Summary
+Added first-class text analysis to the agent. Auto-detects free-form text columns on upload, computes word-frequency EDA, and adds a nested Claude call (`analyze_text` tool) that performs sentiment, topic classification, or any user-defined labelling task — zero new NLP library dependencies. New "📝 Text" tab in the EDA panel, text-specific suggestion chips, and full system-prompt awareness of text columns. 19 new tests, 121 total passing.
+
+---
+
+### [DECISION] Use nested Claude call instead of VADER/TextBlob for text analysis
+Evaluated three options: (A) NLP libraries (VADER, TextBlob), (B) nested Claude API call, (C) both. Chose Option B (Claude as the NLP engine) because it produces far higher quality results for nuanced text, handles custom classification tasks beyond sentiment, requires zero dependencies, and is architecturally elegant — the outer agent decides *what* to analyse, the inner call does the labelling with a structured JSON prompt. The only tradeoff is cost per call, which is acceptable for the 50-text cap.
+
+---
+
+### [DECISION] Text column heuristic: avg_chars ≥ 30 AND cardinality ratio ≥ 0.3
+Two conditions distinguish free-form text from short labels and categoricals:
+- `avg_chars ≥ 30`: filters out "ok / fail / pending" status columns that happen to be strings
+- `cardinality / n ≥ 0.3`: filters out low-cardinality columns like "department" that repeat the same few values
+
+Thresholds are conservative by design — a false negative (missing a text col) is less harmful than a false positive (running word-freq on a categorical). Both constants are named module-level variables for easy tuning.
+
+---
+
+### [DECISION] `EDAReport` backward-compat: new fields with `= ()` defaults
+`EDAReport` is a frozen dataclass. Added `text_cols` and `top_words` after all existing required fields, both defaulting to empty tuples. All 22 existing `test_auto_eda.py` tests pass unchanged because Python dataclasses allow keyword-only defaults after positional fields. No migration or fixture changes needed.
+
+---
+
+### [DECISION] `analyze_text` caps at 50 texts, inner call uses `tools=[]`
+Two design constraints:
+1. **50-text cap**: keeps the inner prompt within a reasonable token budget and response time. Large datasets can be sampled with `.head(30).tolist()` or sliced by the outer agent.
+2. **`tools=[]` in inner call**: the inner LLMClient call passes an empty tools list, so Claude can only return text (the JSON array). This prevents the inner call from accidentally making tool calls, which would break JSON parsing.
+
+---
+
+### [FIX] Test assertion mismatch: `"empty" not in "No texts provided."`
+`test_analyze_text_empty_list` checked `"empty" in result.error.lower()` but the actual error message was "No texts provided." Changed the assertion to `assert result.error` (truthy check) — which correctly validates that an error is present without over-specifying the message wording.
+
+---
+
+### Files created
+| File | Purpose |
+|------|---------|
+| `src/text/__init__.py` | Package marker |
+| `src/text/eda.py` | `detect_text_cols()`, `compute_top_words()`, `_STOP_WORDS` |
+| `src/text/analyzer.py` | `analyze_text_batch()` — nested Claude call, markdown table output |
+| `tests/test_text_eda.py` | 11 tests for detection heuristics + word frequency + EDA integration |
+| `tests/test_text_analyzer.py` | 8 tests for analyzer including FakeLLMClient, dispatch routing |
+
+### Files modified
+| File | Change |
+|------|--------|
+| `src/eda/report.py` | `text_cols` + `top_words` fields with `= ()` defaults |
+| `src/eda/auto_eda.py` | Calls `detect_text_cols` + `compute_top_words`; `_build_questions` extended with `text_cols` param |
+| `src/agent/tools.py` | `_TEXT_TOOL` schema; `get_tool_schemas(has_text_cols=)`; `dispatch_tool(client=)` |
+| `src/agent/system_prompt.py` | `text_cols` param; TEXT ANALYSIS section injected when text columns present |
+| `src/agent/loop.py` | `text_cols` param; `has_text_cols` flag; `client=client` passed to `dispatch_tool` |
+| `src/ui/eda_panel.py` | 4th "📝 Text" tab with word-frequency bar + word-count histogram |
+| `app.py` | `_TEXT_SUGGESTIONS`; `_render_suggestions` uses text suggestions when `eda.text_cols` non-empty; `text_cols` passed to `run_agent_turn` |
+
+---
+
 ## Session 1 — 2026-05-02: v1 Full Build
 
 ### Summary

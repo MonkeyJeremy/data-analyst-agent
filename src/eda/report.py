@@ -45,3 +45,9 @@ class EDAReport:
     # 3–4 sentence human-readable summary for injection into the system prompt.
     # Capped at 1 500 characters inside run_auto_eda().
     narrative: str
+
+    # Text columns detected by detect_text_cols() — empty when none found
+    text_cols: tuple[str, ...] = ()
+
+    # Per-column word frequency: ((col_name, ((word, count), ...)), ...)
+    top_words: tuple[tuple[str, tuple[tuple[str, int], ...]], ...] = ()

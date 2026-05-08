@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from src.eda.report import EDAReport
+from src.text.eda import compute_top_words, detect_text_cols
 
 _NARRATIVE_CAP = 1_500
 _CORR_THRESHOLD = 0.30
@@ -44,8 +45,14 @@ def run_auto_eda(df: pd.DataFrame) -> EDAReport:
     high_cardinality_cols = _compute_high_cardinality(df, cat_cols)
     constant_cols = _compute_constant(df)
 
+    text_cols = detect_text_cols(df)
+    top_words: tuple[tuple[str, tuple[tuple[str, int], ...]], ...] = tuple(
+        (col, compute_top_words(df[col])) for col in text_cols
+    )
+
     suggested_questions = _build_questions(
-        num_cols, cat_cols, missing_pct, top_correlations, skewed_cols, outlier_counts
+        num_cols, cat_cols, missing_pct, top_correlations, skewed_cols, outlier_counts,
+        text_cols=text_cols,
     )
     narrative = _build_narrative(
         df, num_cols, cat_cols, missing_pct, top_correlations, skewed_cols, outlier_counts
@@ -62,6 +69,8 @@ def run_auto_eda(df: pd.DataFrame) -> EDAReport:
         constant_cols=tuple(constant_cols),
         suggested_questions=tuple(suggested_questions),
         narrative=narrative,
+        text_cols=text_cols,
+        top_words=top_words,
     )
 
 
@@ -218,8 +227,18 @@ def _build_questions(
     top_correlations: tuple[tuple[str, str, float], ...],
     skewed_cols: tuple[tuple[str, float], ...],
     outlier_counts: tuple[tuple[str, int], ...],
+    text_cols: tuple[str, ...] = (),
 ) -> list[str]:
     questions: list[str] = []
+
+    # 0. Text-specific questions (prepended when text columns exist)
+    if text_cols:
+        questions.append(
+            f"What is the overall sentiment in the '{text_cols[0]}' column?"
+        )
+        questions.append(
+            f"What are the most common topics or themes in '{text_cols[0]}'?"
+        )
 
     # 1. Top correlation pair
     if top_correlations:
