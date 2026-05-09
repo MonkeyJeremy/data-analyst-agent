@@ -17,7 +17,7 @@ Agent: [calls analyze_text] [markdown table: label / confidence / note per row]
 
 ## Features
 
-- **Natural language Q&A** — powered by Claude tool-use API (ReAct loop)
+- **Natural language Q&A** — powered by a bounded ReAct loop; works with Anthropic Claude or OpenAI GPT models
 - **Real code execution** — agent writes and runs Python/pandas or SQL against your data
 - **Interactive charts** — Plotly figures rendered inline; matplotlib as fallback
 - **Auto-retry on errors** — agent reads the traceback, fixes the code, and retries (max 2)
@@ -26,7 +26,8 @@ Agent: [calls analyze_text] [markdown table: label / confidence / note per row]
 - **Multi-format upload** — `.csv`, `.xlsx`, `.xls`, `.json`, `.db`, `.sqlite`
 - **SQL mode** — connect to SQLite or any SQLAlchemy-compatible database
 - **Layout detection** — handles messy spreadsheets with blank rows, multi-row headers, merged cells
-- **Prompt caching** — system prompt cached across turns; ~80% reduction in input token billing
+- **Multi-provider** — switch between Anthropic Claude and OpenAI GPT models from the sidebar; extensible to Gemini, Mistral, Groq, Ollama, and others via `BaseLLMClient`
+- **Prompt caching** — system prompt cached across turns; ~80% reduction in input token billing (Anthropic)
 - **Token metering** — live session token count + cache hit rate displayed in sidebar
 - **Sandboxed execution** — AST import blocklist blocks `os`, `subprocess`, `socket`, and 20+ other dangerous modules before any code runs; DataFrame is never mutated
 
@@ -35,12 +36,12 @@ Agent: [calls analyze_text] [markdown table: label / confidence / note per row]
 ```
 User question
   └─▶ build_system_prompt(schema, eda_summary, text_cols)
-  └─▶ Claude API — tool-use / cached system prompt
+  └─▶ BaseLLMClient.call()          # Anthropic | OpenAI | … (swap via sidebar)
         ├─ stop_reason == end_turn  ──▶ return final text
         └─ stop_reason == tool_use
               ├─ execute_python(code, df)   # AST check → sandboxed exec()
               ├─ execute_sql(engine, query) # SELECT-only whitelist
-              └─ analyze_text(texts, task)  # nested Claude call → JSON → table
+              └─ analyze_text(texts, task)  # nested LLM call → JSON → table
               └─▶ append tool result → loop (max 5 iterations)
 ```
 
@@ -53,9 +54,10 @@ User question
 | Prompt caching on system prompt | Schema + EDA context is static per session; caching cuts input token cost 80–90% |
 | AST import blocklist | Blocks dangerous modules before `exec()` — no code ever runs that imports `os`, `subprocess`, etc. |
 | `df.copy()` in executor | Agent code can never mutate the user's session DataFrame |
-| Nested Claude call for text analysis | Zero NLP library dependencies; handles any classification task the user describes |
+| Nested LLM call for text analysis | Zero NLP library dependencies; handles any classification task the user describes |
+| `BaseLLMClient` provider abstraction | Loop never touches SDK types; swap Anthropic ↔ OpenAI ↔ others by implementing 3 methods |
 | Frozen dataclasses as pipeline contracts | `SchemaContext`, `EDAReport`, `ExecutionResult`, `TurnResult` — immutable, hashable, low hallucination surface |
-| `FakeLLMClient` test double | All 121 tests run without real API calls; agent loop tested as a state machine |
+| `FakeLLMClient` test double | All 129 tests run without real API calls; agent loop tested as a state machine |
 
 ## Project Structure
 
@@ -65,8 +67,12 @@ data-analyst-agent/
 ├── src/
 │   ├── config.py                   # MODEL_NAME, MAX_TOKENS, MAX_TOOL_ITERATIONS
 │   ├── agent/
-│   │   ├── client.py               # Anthropic API wrapper — prompt caching + token metering
-│   │   ├── loop.py                 # Bounded ReAct loop → TurnResult
+│   │   ├── base.py                 # BaseLLMClient ABC + AgentResponse / ToolCall / TokenUsage
+│   │   ├── client.py               # create_client() factory; LLMClient alias for backward compat
+│   │   ├── providers/
+│   │   │   ├── anthropic_provider.py  # AnthropicClient — prompt caching + token metering
+│   │   │   └── openai_provider.py     # OpenAIClient — tool-schema conversion + history format
+│   │   ├── loop.py                 # Bounded ReAct loop → TurnResult (provider-agnostic)
 │   │   ├── system_prompt.py        # Schema + EDA + text-cols system prompt builder
 │   │   └── tools.py                # Tool schemas + dispatch (python / sql / analyze_text)
 │   ├── data/
@@ -92,7 +98,7 @@ data-analyst-agent/
 │       ├── layout_panel.py         # Layout-fix confirmation banner
 │       ├── sql_panel.py            # SQL connect panel + stats bar
 │       └── upload_panel.py         # Sidebar file uploader
-└── tests/                          # 121 tests, 80–100% coverage on all non-UI modules
+└── tests/                          # 129 tests, 80–100% coverage on all non-UI modules
 ```
 
 ## Getting Started
@@ -101,6 +107,7 @@ data-analyst-agent/
 
 - Python 3.11+
 - An [Anthropic API key](https://console.anthropic.com/) **or** an [OpenAI API key](https://platform.openai.com/api-keys)
+  — other providers (Gemini, Mistral, Groq, Ollama) can be added by implementing `BaseLLMClient`
 - Windows: enable [Win32 Long Paths](https://pip.pypa.io/warnings/enable-long-paths) before installing
 
 ### Install
@@ -115,7 +122,8 @@ pip install -e ".[dev]"
 
 ```bash
 cp .env.example .env
-# edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+# For Anthropic:  set ANTHROPIC_API_KEY=sk-ant-...
+# For OpenAI:     set OPENAI_API_KEY=sk-...
 ```
 
 ### Run
@@ -141,14 +149,16 @@ pytest --cov=src --cov-report=term-missing
 | v3 — Auto EDA | ✅ Done | Auto-generated EDA panel (distributions, correlations, outliers, skewness) |
 | v4 — Text Analysis | ✅ Done | Text column detection, word frequency, nested Claude call for sentiment/topics |
 | v5 — Hardening | ✅ Done | Prompt caching, token metering, AST import sandbox, README update |
+| v6 — Multi-provider | ✅ Done | `BaseLLMClient` ABC; Anthropic + OpenAI providers; extensible to Gemini, Groq, Ollama |
 
 ## Tech Stack
 
 - [Streamlit](https://streamlit.io/) — UI
 - [Anthropic Claude API](https://docs.anthropic.com/) — LLM with tool use + prompt caching
+- [OpenAI API](https://platform.openai.com/docs) — alternative LLM provider
 - [pandas](https://pandas.pydata.org/) + [plotly](https://plotly.com/python/) + [matplotlib](https://matplotlib.org/) — data analysis and charts
 - [SQLAlchemy](https://www.sqlalchemy.org/) — SQL database connectivity
-- [pytest](https://pytest.org/) — testing (121 tests)
+- [pytest](https://pytest.org/) — testing (129 tests)
 
 ## Security Note
 
