@@ -1,3 +1,4 @@
+import ast
 import io
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
@@ -13,6 +14,50 @@ import seaborn as sns
 from src.execution.result import ExecutionResult
 
 matplotlib.use("Agg")  # non-interactive backend; must be set before any plt use
+
+# ── Security: blocked imports ─────────────────────────────────────────────────
+# Modules that could access the filesystem, network, processes, or memory.
+# Checked via AST parse before exec() so the code never runs.
+_BLOCKED_MODULES: frozenset[str] = frozenset({
+    "os", "sys", "subprocess", "socket", "shutil", "pathlib",
+    "importlib", "ctypes", "pickle", "marshal", "shelve",
+    "builtins", "__builtin__", "tempfile", "glob", "fnmatch",
+    "multiprocessing", "threading", "asyncio", "concurrent",
+    "pty", "tty", "termios", "fcntl", "signal", "resource",
+    "mmap", "struct", "cffi", "sysconfig",
+})
+
+
+def _check_imports(code: str) -> str | None:
+    """Return an error string if *code* imports a blocked module, else ``None``.
+
+    Uses :mod:`ast` to inspect the parse tree — the code is never executed.
+    Also catches :exc:`SyntaxError` and returns it as an error string so the
+    caller gets a clean message rather than an exception.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return f"SyntaxError: {exc}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in _BLOCKED_MODULES:
+                    return (
+                        f"SecurityError: import '{alias.name}' is not permitted "
+                        "in the analysis sandbox."
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                root = node.module.split(".")[0]
+                if root in _BLOCKED_MODULES:
+                    return (
+                        f"SecurityError: 'from {node.module} import ...' is not "
+                        "permitted in the analysis sandbox."
+                    )
+    return None
 
 
 def execute_python(code: str, df: pd.DataFrame) -> ExecutionResult:
@@ -41,6 +86,17 @@ def execute_python(code: str, df: pd.DataFrame) -> ExecutionResult:
     error: str | None = None
 
     plt.close("all")
+
+    # ── Security pre-check ────────────────────────────────────────────────────
+    import_error = _check_imports(code)
+    if import_error:
+        return ExecutionResult(
+            stdout="",
+            error=import_error,
+            figures=(),
+            plotly_figures=(),
+            summary=f"ERROR:\n{import_error}",
+        )
 
     try:
         with redirect_stdout(stdout_buf), redirect_stderr(stdout_buf):

@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.agent.client import LLMClient
+from src.agent.client import LLMClient, TokenUsage
 from src.agent.system_prompt import build_system_prompt, build_sql_system_prompt
 from src.agent.tools import get_tool_schemas, dispatch_tool
 from src.config import MAX_TOOL_ITERATIONS
@@ -28,6 +28,7 @@ class TurnResult:
     messages: list[dict]        # full updated history to persist in session state
     figures: tuple[bytes, ...]  # matplotlib PNG fallback figures
     plotly_figures: tuple[str, ...] = ()  # Plotly JSON figures (preferred)
+    token_usage: TokenUsage | None = None  # cumulative session token counts
 
 
 def run_agent_turn(
@@ -107,6 +108,7 @@ def run_agent_turn(
                 messages=history,
                 figures=tuple(all_figures),
                 plotly_figures=tuple(all_plotly_figures),
+                token_usage=client.usage,
             )
 
         if response.stop_reason == "tool_use":
@@ -155,6 +157,7 @@ def run_agent_turn(
         messages=history,
         figures=tuple(all_figures),
         plotly_figures=tuple(all_plotly_figures),
+        token_usage=client.usage,
     )
 
 

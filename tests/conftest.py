@@ -11,6 +11,7 @@ import openpyxl
 import pandas as pd
 import pytest
 
+from src.agent.client import TokenUsage
 from src.data.schema import describe_schema
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
@@ -104,6 +105,7 @@ class FakeLLMClient:
     def __init__(self, responses: list[FakeMessage]) -> None:
         self._queue: deque[FakeMessage] = deque(responses)
         self.calls: list[dict] = []  # recorded for assertions
+        self.usage: TokenUsage = TokenUsage()  # mirrors LLMClient interface
 
     def call(self, *, system: str, messages: list[dict], tools: list[dict]) -> FakeMessage:
         # deepcopy so mutations after this call don't corrupt recorded history

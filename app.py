@@ -73,6 +73,11 @@ def _init_session_state() -> None:
         "sql_connection": None,      # SQLConnection | None
         "sql_tables": None,          # list[str] | None — multi-table picker
         "_mode": "dataframe",        # "dataframe" | "sql"
+        # Token metering
+        "session_input_tokens": 0,
+        "session_output_tokens": 0,
+        "session_cache_read_tokens": 0,
+        "session_cache_write_tokens": 0,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -140,6 +145,9 @@ def _render_sidebar() -> str:
                 hide_index=False,
             )
 
+        # Token usage meter
+        _render_token_meter()
+
         # Reset button
         if (
             st.session_state.df is not None
@@ -151,6 +159,26 @@ def _render_sidebar() -> str:
                 st.rerun()
 
     return api_key_input
+
+
+def _render_token_meter() -> None:
+    """Show a compact token-usage summary in the sidebar."""
+    inp = st.session_state.get("session_input_tokens", 0)
+    out = st.session_state.get("session_output_tokens", 0)
+    cached = st.session_state.get("session_cache_read_tokens", 0)
+    if inp == 0 and out == 0:
+        return  # nothing to show yet
+
+    total = inp + out
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown("#### 📊 Session tokens")
+    col_i, col_o = st.columns(2)
+    col_i.metric("Input", f"{inp:,}")
+    col_o.metric("Output", f"{out:,}")
+    if cached:
+        pct = round(cached / max(inp, 1) * 100)
+        st.caption(f"⚡ {cached:,} tokens from cache ({pct}% cache hit rate)")
+    st.caption(f"Total this session: **{total:,}**")
 
 
 def _reset_all_state() -> None:
@@ -172,6 +200,10 @@ def _reset_all_state() -> None:
     st.session_state.last_plotly_figures = ()
     st.session_state.pending_query = None
     st.session_state._mode = "dataframe"
+    st.session_state.session_input_tokens = 0
+    st.session_state.session_output_tokens = 0
+    st.session_state.session_cache_read_tokens = 0
+    st.session_state.session_cache_write_tokens = 0
 
 
 def _commit_upload(df: object, filename: str) -> None:
@@ -409,6 +441,12 @@ def _run_query(prompt: str, api_key: str) -> None:
             st.session_state.messages = result.messages
             st.session_state.last_figures = result.figures
             st.session_state.last_plotly_figures = result.plotly_figures
+            # Accumulate token usage for the sidebar meter
+            if result.token_usage is not None:
+                st.session_state.session_input_tokens += result.token_usage.input_tokens
+                st.session_state.session_output_tokens += result.token_usage.output_tokens
+                st.session_state.session_cache_read_tokens += result.token_usage.cache_read_tokens
+                st.session_state.session_cache_write_tokens += result.token_usage.cache_write_tokens
         except Exception as exc:  # noqa: BLE001
             st.error(f"Agent error: {exc}")
             st.session_state.messages.pop()
