@@ -100,7 +100,7 @@ data-analyst-agent/
 ### Prerequisites
 
 - Python 3.11+
-- An [Anthropic API key](https://console.anthropic.com/)
+- An [Anthropic API key](https://console.anthropic.com/) **or** an [OpenAI API key](https://platform.openai.com/api-keys)
 - Windows: enable [Win32 Long Paths](https://pip.pypa.io/warnings/enable-long-paths) before installing
 
 ### Install
