@@ -1,9 +1,9 @@
 # Data Analyst Agent — Project Report
 
 **Author:** Jeremy Zhang  
-**Project Duration:** 2026-05-02 to 2026-05-07  
+**Project Duration:** 2026-05-02 to 2026-05-09  
 **Repository:** github.com/MonkeyJeremy/data-analyst-agent  
-**Final Test Count:** 102 passing · 0 failing  
+**Final Test Count:** 129 passing · 0 failing  
 
 ---
 
@@ -28,13 +28,17 @@
 
 The **Data Analyst Agent** is a full-stack AI-powered data analysis tool built entirely from scratch. Users upload a CSV, Excel, JSON, or SQLite file — or connect to a live SQL database — and converse with a Claude-powered agent in plain English. The agent writes and executes real Python or SQL code, renders interactive Plotly charts, and explains findings in natural language.
 
-The project was built across five focused sessions spanning six days, producing a production-quality Streamlit application with:
+The project was built across six focused sessions spanning seven days, producing a production-quality Streamlit application with:
 
 - A bounded **ReAct agent loop** (Reason + Act) backed by the Anthropic Claude API
 - **Automated EDA on upload** — missing values, correlations, skewness, outliers, and AI-generated question suggestions
 - **Non-standard layout detection** for messy Excel files with multi-row headers
 - **Dual-mode data connectivity** — DataFrame mode (pandas) and SQL mode (SQLAlchemy)
-- **102 unit and integration tests** covering all non-UI modules
+- **Text analysis via nested Claude calls** — free-form text column detection, word frequency EDA, sentiment/topic classification without any NLP libraries
+- **Prompt caching** — system prompt cached per session for ~80% input token reduction
+- **Token metering** — live sidebar display of session token usage and cache hit rate
+- **AST import sandbox** — blocks dangerous `os`, `subprocess`, `socket`, and 20+ other modules before any `exec()` runs
+- **129 unit and integration tests** covering all non-UI modules
 
 ---
 
@@ -94,10 +98,10 @@ User Message ──► Bounded ReAct Loop (run_agent_turn)
 ```
 src/
 ├── agent/
-│   ├── client.py          # Anthropic SDK wrapper + exponential backoff retry
-│   ├── loop.py            # Bounded ReAct loop (run_agent_turn)
-│   ├── system_prompt.py   # Prompt construction (DataFrame mode + SQL mode)
-│   └── tools.py           # Tool schemas + dispatch_tool()
+│   ├── client.py          # Anthropic SDK wrapper + prompt caching + TokenUsage metering
+│   ├── loop.py            # Bounded ReAct loop (run_agent_turn) + TurnResult with token_usage
+│   ├── system_prompt.py   # Prompt construction (DataFrame / SQL / text_cols modes)
+│   └── tools.py           # Tool schemas + dispatch_tool() (python / sql / analyze_text)
 ├── data/
 │   ├── layout.py          # Non-standard header detection (LayoutResult)
 │   ├── loader.py          # Multi-format file loader (CSV/Excel/JSON)
@@ -107,14 +111,17 @@ src/
 │   ├── executor.py        # execute_sql() with read-only guard
 │   └── schema.py          # TableSchema introspection
 ├── eda/
-│   ├── auto_eda.py        # run_auto_eda() pure function
-│   └── report.py          # EDAReport frozen dataclass
+│   ├── auto_eda.py        # run_auto_eda() pure function + text EDA integration
+│   └── report.py          # EDAReport frozen dataclass (text_cols + top_words fields)
 ├── execution/
-│   ├── python_executor.py # Safe exec() sandbox + Plotly/matplotlib capture
+│   ├── python_executor.py # AST import blocklist + sandboxed exec() + chart capture
 │   └── result.py          # ExecutionResult frozen dataclass
+├── text/
+│   ├── eda.py             # detect_text_cols() + compute_top_words() + _STOP_WORDS
+│   └── analyzer.py        # analyze_text_batch() — nested Claude call → JSON → table
 └── ui/
     ├── chat_panel.py      # Chat history + interactive chart renderer
-    ├── eda_panel.py       # 3-tab EDA panel (Overview/Distributions/Correlations)
+    ├── eda_panel.py       # 4-tab EDA panel (Overview/Distributions/Correlations/Text)
     ├── layout_panel.py    # Header confirmation UI
     ├── sql_panel.py       # SQL connection widget + stats bar
     ├── styles.py          # Global CSS injection
@@ -129,10 +136,11 @@ Every stage of the pipeline produces an immutable frozen dataclass. This was a d
 |-----------|-------|--------|
 | `ExecutionResult` | `python_executor`, `executor` | `stdout`, `error`, `figures`, `summary`, `plotly_figures` |
 | `SchemaContext` | `schema.py` | `n_rows`, `n_cols`, `formatted_dtypes`, `head_markdown`, `describe_markdown` |
-| `EDAReport` | `auto_eda.py` | `missing_pct`, `top_correlations`, `skewed_cols`, `outlier_counts`, `suggested_questions`, `narrative` |
+| `EDAReport` | `auto_eda.py` | `missing_pct`, `top_correlations`, `skewed_cols`, `outlier_counts`, `suggested_questions`, `narrative`, `text_cols`, `top_words` |
 | `LayoutResult` | `layout.py` | `status`, `header_row`, `unnamed_ratio`, `confidence`, `candidate_rows`, `message` |
 | `TableSchema` | `db/schema.py` | `name`, `columns`, `row_count` |
-| `TurnResult` | `loop.py` | `final_text`, `tool_calls`, `messages`, `figures`, `plotly_figures` |
+| `TurnResult` | `loop.py` | `final_text`, `tool_calls`, `messages`, `figures`, `plotly_figures`, `token_usage` |
+| `TokenUsage` | `client.py` | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` |
 
 ---
 
@@ -254,6 +262,39 @@ This discipline was maintained across all five sessions:
 
 ---
 
+### Session 6 — v4 Text Analysis (2026-05-09)
+
+**Goal:** Add first-class text column support with zero new NLP library dependencies.
+
+**Built:**
+- `detect_text_cols(df)` — heuristic: `avg_chars ≥ 30` AND `cardinality_ratio ≥ 0.3`. Correctly identifies review columns; ignores low-cardinality categoricals like "department"
+- `compute_top_words(series, n=15)` — built-in 50-word stop list, `re.findall(r"[a-z]+"`, 3-char minimum; no NLTK required
+- `EDAReport.text_cols` + `EDAReport.top_words` — two new optional fields with `= ()` defaults; all 22 existing `test_auto_eda.py` tests pass unchanged
+- `analyze_text_batch(client, texts, task)` — nested Claude API call: structured JSON prompt, strips markdown fences, parses JSON array, builds markdown table with label / confidence / note per row. Capped at 50 texts; uses `tools=[]` to prevent inner call from making tool calls
+- `_TEXT_TOOL` schema + `analyze_text` dispatch route in `tools.py`
+- `build_system_prompt()` extended with `text_cols` param — TEXT ANALYSIS section injected when text columns detected
+- 4th "📝 Text" EDA tab with word-frequency horizontal bar chart + word-count distribution histogram
+- Text-specific suggestion chips replace EDA suggestions when text columns exist
+- 19 new tests (11 EDA + 8 analyzer), total 121
+
+**Key decision:** Chose the nested Claude API call over VADER/TextBlob after evaluating three options. Zero dependencies, handles custom classification tasks beyond sentiment, architecturally elegant. The inner call passes `tools=[]` to ensure it only returns text — preventing the inner call from itself making tool use calls that would break JSON parsing.
+
+---
+
+### Session 7 — v5 Production Hardening (2026-05-09)
+
+**Trigger:** Formal evaluation against a "What Makes a Good Agent Project" framework identified four high-priority gaps: no prompt caching, no cost visibility, exec() sandbox easily bypassed via dangerous imports, and stale README.
+
+**Built:**
+- **Prompt caching** — `client.py` wraps system prompt in `{"type": "text", "cache_control": {"type": "ephemeral"}}` block. Schema + EDA narrative is static across all turns in a session; served from cache at ~10% of full input cost after the first call. Expected 80–90% reduction in input token billing per session.
+- **Token metering** — `TokenUsage` dataclass on `LLMClient` accumulates `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` from every `response.usage`. Flows through `TurnResult.token_usage` to `app.py`. Sidebar displays live count + cache hit percentage. Resets on file clear.
+- **AST import sandbox** — `_check_imports(code)` parses generated code with `ast.walk()` before any `exec()`. Blocks 25+ modules: `os`, `sys`, `subprocess`, `socket`, `shutil`, `pathlib`, `importlib`, `ctypes`, `pickle`, `multiprocessing`, `threading`, and more. Catches both `import X` and `from X import Y` forms. Returns `SecurityError` result without running any code.
+- `FakeLLMClient.usage = TokenUsage()` added to `conftest.py` to mirror `LLMClient` interface in tests
+- **README rewritten** — now accurately reflects v1–v5: SQL, JSON, text analysis, caching, sandbox, 129 tests
+- 8 new tests for the import blocklist, total 129
+
+---
+
 ## 7. Key Engineering Decisions
 
 ### 7.1 Stateless Full-History Replay
@@ -322,7 +363,68 @@ Rather than converting SQL query results to a DataFrame (which loses the ability
 | Data prep | `pd.json_normalize`, `load_tabular` | `connect_sqlite_file`, `connect_url` |
 | Safety | `df.copy()` prevents mutation | SELECT-only regex guard |
 
-### 7.6 JSON Normalisation Strategy
+### 7.6 Text Column Detection Heuristic
+
+Two conditions distinguish free-form text from short labels and categorical columns:
+
+```python
+_MIN_AVG_CHARS = 30    # avg character length — below this it's a short label
+_MIN_CARDINALITY = 0.3 # unique/total ratio — below this it's a categorical
+```
+
+Both conditions must be true. A status column like `["ok", "fail", "pending"]` fails on avg_chars. A department column like `["Engineering"] × 50` fails on cardinality. The thresholds are deliberately conservative — a false negative (missing a text column) is less harmful than a false positive (running word frequency on a categorical). Both are named module-level constants for easy tuning.
+
+### 7.7 Nested Claude Call Architecture for Text Analysis
+
+The `analyze_text_batch()` function makes a second `client.call()` with a structured JSON-return prompt and `tools=[]`:
+
+```python
+response = client.call(
+    system=_ANALYSIS_SYSTEM,   # "Return ONLY a JSON array"
+    messages=[{"role": "user", "content": numbered_prompt}],
+    tools=[],                  # prevents inner call from making tool calls
+)
+```
+
+Setting `tools=[]` is critical. If the inner call received the `execute_python` tool definition, Claude might decide to call it rather than return JSON, breaking the parser. By removing all tools, the response is guaranteed to be pure text (the JSON array).
+
+The 50-text cap keeps the inner prompt within a reasonable token budget. For larger columns, the outer agent is instructed to sample with `.dropna().head(30).tolist()`.
+
+### 7.8 Prompt Caching on System Prompt
+
+The system prompt (schema + EDA narrative + text col instructions) is static within a session — it never changes between turns. By wrapping it in a `cache_control: ephemeral` block, Anthropic's prompt cache serves it at ~10% of full input token cost after the first call:
+
+```python
+system_block = [
+    {
+        "type": "text",
+        "text": system_prompt_string,
+        "cache_control": {"type": "ephemeral"},
+    }
+]
+```
+
+On a 10-turn session with a 2,000-token system prompt, this saves approximately 18,000 input tokens — a free optimisation with zero quality impact.
+
+### 7.9 AST Import Sandbox
+
+`exec()` is not truly sandboxed at the Python level — crafted code can still `import os`, `import subprocess`, etc. The `_check_imports()` function addresses this by parsing the code with `ast.walk()` before any execution:
+
+```python
+for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+        root = alias.name.split(".")[0]
+        if root in _BLOCKED_MODULES:
+            return f"SecurityError: ..."
+    elif isinstance(node, ast.ImportFrom):
+        root = node.module.split(".")[0]
+        if root in _BLOCKED_MODULES:
+            return f"SecurityError: ..."
+```
+
+The blocked set covers filesystem, network, process, memory, serialisation, and IPC modules. The check catches both `import os` and `from os.path import join`. If blocked, a `SecurityError` `ExecutionResult` is returned immediately — the code never reaches `exec()`. This is a meaningful first defence; production would add Docker container isolation.
+
+### 7.11 JSON Normalisation Strategy
 
 `pd.read_json` was deliberately **not** used as the primary approach because it silently mishandles nested structures. A `{"data": [...]}` wrapper produces a column named `"data"` containing Python lists — superficially valid, completely wrong for analysis.
 
@@ -471,7 +573,7 @@ Key properties:
 - **Records calls with deep copies:** assertions on `client.calls` reflect state at the moment of the call, not post-facto state.
 - **Raises on empty queue:** if the loop makes more API calls than expected, the test fails immediately with a clear error.
 
-### Coverage Summary (Final)
+### Coverage Summary (Final — 129 tests)
 
 | Module | Coverage |
 |--------|----------|
@@ -484,8 +586,11 @@ Key properties:
 | `src/eda/auto_eda.py` | 97% |
 | `src/eda/report.py` | 100% |
 | `src/agent/loop.py` | 91% |
-| `src/agent/tools.py` | 72% |
+| `src/agent/tools.py` | 76% |
 | `src/execution/result.py` | 100% |
+| `src/execution/python_executor.py` | 70% |
+| `src/text/eda.py` | 96% |
+| `src/text/analyzer.py` | 100% |
 | `src/ui/*` | N/A (Streamlit; requires browser) |
 
 ### Test Fixtures
@@ -548,15 +653,17 @@ Note: `gpedit.msc` (Group Policy) is not available on Windows Home edition — t
 
 1. **Add a streaming response mode.** The current flow blocks until the full agent turn completes. Streaming partial text back to the UI would improve perceived responsiveness significantly.
 
-2. **Persist chat history across sessions.** Currently chat resets on upload or page refresh. A lightweight SQLite-backed history store would dramatically improve the "continuing an analysis" workflow.
+2. **Persist chat history across sessions.** Currently chat resets on upload or page refresh. A lightweight SQLite-backed history store keyed by file hash would dramatically improve the "continuing an analysis" workflow — re-uploading the same file would restore prior context automatically.
 
 3. **Add chart generation to SQL mode.** SQL mode currently returns markdown tables. A follow-up `execute_python` call with the query results as a temporary DataFrame would enable full chart rendering in SQL mode.
 
-4. **Instrument the agent loop.** Add structured logging for each tool call (timestamp, tool name, execution time, token count). This data would enable per-query cost tracking and latency profiling.
+4. **Tiered model routing.** Simple aggregation queries ("what's the average salary?") go to the same model as complex multi-step analysis. Routing simple queries to `claude-haiku-4-5` and reserving Sonnet for complex ones would reduce cost meaningfully and is a strong signal of production-aware design.
 
-5. **Make `MAX_TOOL_ITERATIONS` user-configurable.** A sidebar slider (1–10) would let power users trade more reasoning steps for longer waits, while keeping the default conservative.
+5. **Replace `exec()` entirely with a container sandbox.** The AST import blocklist is a meaningful first defence but not production-grade. A Docker container with no network access, filesystem isolation, CPU/memory limits, and execution timeouts would fully address the security gap.
 
-6. **Improve test coverage of `src/agent/client.py`.** The retry branch (lines 25–38) was explicitly deferred. A mock-based test of the exponential backoff on 429 responses would close this gap.
+6. **Add a team knowledge loop.** Successful analysis workflows ("clean this column type", "detect seasonal patterns") are currently lost after each session. Exporting these as reusable JSON "recipes" or prompt templates would compound team knowledge over time.
+
+7. **Improve test coverage of `src/agent/client.py`.** The retry branch (lines 25–38) was explicitly deferred. A mock-based test of the exponential backoff on 429 responses would close this gap.
 
 ---
 
@@ -602,6 +709,41 @@ Two layers: First, only SELECT, WITH (CTEs), and EXPLAIN statements are permitte
 ### Q: Describe a bug that was hard to find and how you found it.
 
 The mutable reference bug in `FakeLLMClient`. The symptom was that `test_tool_error_retry` failed asserting the last message role was `"user"` — it was `"assistant"` instead. At first this looked like the loop was appending messages in the wrong order. Adding print statements revealed the recorded call snapshot already showed `"assistant"` at record time. The root cause was that `self.calls.append({"messages": messages})` stored a reference, not a copy — later loop iterations that appended to the shared `history` list retroactively changed what the recorded snapshot appeared to contain. The fix was `copy.deepcopy(messages)`. The lesson is generalised to any pattern where you record mutable state for later assertion: snapshot it immediately or you're recording a moving target.
+
+---
+
+---
+
+### Q: How did you approach text analysis without any NLP libraries?
+
+I used Claude itself as the NLP engine via a nested API call. When a user asks about sentiment or topics, the outer agent samples the text column and calls `analyze_text`, which makes a second `client.call()` with a structured JSON-return prompt: "Return a JSON array with one object per text containing label, confidence, and note." The inner call uses `tools=[]` so it can only return text, guaranteeing the response is the JSON array rather than another tool invocation. This produces far higher quality results than rule-based libraries like VADER — it handles sarcasm, domain-specific language, and any custom classification task the user describes. The only tradeoff is cost per call, mitigated by the 50-text cap.
+
+---
+
+### Q: How does your prompt caching implementation work, and what's the expected saving?
+
+The system prompt — which contains the schema, EDA narrative, and text column instructions — is static for the entire session. By wrapping it in a `cache_control: {"type": "ephemeral"}` content block, Anthropic's prompt cache stores it on the first call and serves it at roughly 10% of the normal input token cost on every subsequent call. On a typical 10-turn session with a 2,000-token system prompt, this saves around 18,000 input tokens with zero impact on output quality. The change is five lines in `client.py`.
+
+---
+
+### Q: How did you harden the Python executor, and what are its remaining limitations?
+
+I added an AST-based import check that runs before any `exec()`. It parses the generated code with `ast.walk()` and rejects any attempt to import from a blocklist of 25+ modules: `os`, `sys`, `subprocess`, `socket`, `shutil`, `pathlib`, `ctypes`, and more. It catches both `import X` and `from X import Y` syntax. The code never reaches `exec()` if a blocked module appears — it returns a `SecurityError` `ExecutionResult` immediately.
+
+The remaining limitations are honest: the AST check doesn't catch dynamic imports (`__import__("os")`), doesn't limit CPU time or memory, and doesn't block network access from pre-imported modules. For production, I would replace `exec()` entirely with a container sandbox — Docker with no network, read-only mounted data, and execution time limits. The current version is local-first and the code and README are explicit about that.
+
+---
+
+### Q: How do you think about the cost of running this agent at scale?
+
+Four levers I implemented or planned:
+
+1. **Bounded loop** — 5 iterations max prevents runaway costs from Claude getting stuck in a reasoning loop
+2. **Deterministic pre-computation** — EDA, layout detection, schema introspection all run as deterministic scripts rather than reasoning rounds; this avoids paying model costs for work that's cheaper in code
+3. **Prompt caching** — the schema context is served from cache at 10% cost after the first turn
+4. **Text analysis cap** — `analyze_text` is capped at 50 texts per call
+
+The next tier I would add: tiered model routing (Haiku for simple lookups, Sonnet for analysis), conversation summarisation to compress long histories, and per-query budget tracking so users see cost before making complex requests.
 
 ---
 
