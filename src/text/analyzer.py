@@ -70,9 +70,7 @@ def analyze_text_batch(
             messages=[{"role": "user", "content": prompt}],
             tools=[],
         )
-        raw = "\n".join(
-            block.text for block in response.content if hasattr(block, "text")
-        ).strip()
+        raw = response.text
 
         # Strip any accidental markdown fences
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("` \n")

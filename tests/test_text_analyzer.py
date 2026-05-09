@@ -27,8 +27,7 @@ def _make_fake_client(labels: list[str] | None = None, raw_override: str | None 
                 for i in range(count)
             ]
             text = json.dumps(results)
-        block = SimpleNamespace(text=text)
-        return SimpleNamespace(content=[block])
+        return SimpleNamespace(text=text)
 
     return SimpleNamespace(call=_call)
 
@@ -41,8 +40,7 @@ def _make_client_for_n(n: int, label: str = "positive"):
             {"index": i + 1, "label": label, "confidence": "high", "note": "ok"}
             for i in range(n)
         ]
-        block = SimpleNamespace(text=json.dumps(results))
-        return SimpleNamespace(content=[block])
+        return SimpleNamespace(text=json.dumps(results))
 
     return SimpleNamespace(call=_call)
 
@@ -77,8 +75,7 @@ def test_analyze_text_caps_at_50():
             {"index": i + 1, "label": "neutral", "confidence": "low", "note": "ok"}
             for i in range(sent)
         ]
-        block = SimpleNamespace(text=json.dumps(results))
-        return SimpleNamespace(content=[block])
+        return SimpleNamespace(text=json.dumps(results))
 
     client = SimpleNamespace(call=_call)
     result = analyze_text_batch(client, texts, "topic")

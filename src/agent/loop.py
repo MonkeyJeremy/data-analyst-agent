@@ -1,3 +1,4 @@
+"""Bounded ReAct loop — provider-agnostic via :class:`BaseLLMClient`."""
 from __future__ import annotations
 
 import copy
@@ -6,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.agent.client import LLMClient, TokenUsage
+from src.agent.base import BaseLLMClient, TokenUsage
 from src.agent.system_prompt import build_system_prompt, build_sql_system_prompt
 from src.agent.tools import get_tool_schemas, dispatch_tool
 from src.config import MAX_TOOL_ITERATIONS
@@ -25,14 +26,14 @@ class ToolCallRecord:
 class TurnResult:
     final_text: str
     tool_calls: tuple[ToolCallRecord, ...]
-    messages: list[dict]        # full updated history to persist in session state
-    figures: tuple[bytes, ...]  # matplotlib PNG fallback figures
-    plotly_figures: tuple[str, ...] = ()  # Plotly JSON figures (preferred)
+    messages: list[dict]         # full updated history to persist in session state
+    figures: tuple[bytes, ...]   # matplotlib PNG fallback figures
+    plotly_figures: tuple[str, ...] = ()   # Plotly JSON figures (preferred)
     token_usage: TokenUsage | None = None  # cumulative session token counts
 
 
 def run_agent_turn(
-    client: LLMClient,
+    client: BaseLLMClient,
     messages: list[dict],
     df: pd.DataFrame | None = None,
     schema: SchemaContext | None = None,
@@ -55,9 +56,10 @@ def run_agent_turn(
     Parameters
     ----------
     client:
-        LLM client for making API calls.
+        Any :class:`~src.agent.base.BaseLLMClient` implementation
+        (Anthropic, OpenAI, or a test double).
     messages:
-        Current conversation history (mutated locally; original is unchanged).
+        Current conversation history in the provider's expected format.
     df:
         DataFrame for DataFrame mode.
     schema:
@@ -68,6 +70,9 @@ def run_agent_turn(
         SQLAlchemy engine for SQL mode.
     sql_schema:
         Tuple of :class:`~src.db.schema.TableSchema` objects for SQL mode.
+    text_cols:
+        Names of free-form text columns detected by
+        :func:`~src.text.eda.detect_text_cols`.
 
     Returns
     -------
@@ -97,13 +102,14 @@ def run_agent_turn(
     all_plotly_figures: list[str] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
+        # client.call() accepts internal tool schema format and converts
+        # to its own wire format internally
         response = client.call(system=system, messages=history, tools=tools)
 
         if response.stop_reason == "end_turn":
-            final_text = _extract_text(response)
-            history.append({"role": "assistant", "content": response.content})
+            history.append(client.build_assistant_entry(response))
             return TurnResult(
-                final_text=final_text,
+                final_text=response.text,
                 tool_calls=tuple(tool_calls),
                 messages=history,
                 figures=tuple(all_figures),
@@ -112,37 +118,30 @@ def run_agent_turn(
             )
 
         if response.stop_reason == "tool_use":
-            history.append({"role": "assistant", "content": response.content})
+            history.append(client.build_assistant_entry(response))
 
-            tool_results: list[dict] = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
+            raw_results: list[dict] = []
+            for tc in response.tool_calls:
                 result = dispatch_tool(
-                    block.name,
-                    block.input,
+                    tc.name,
+                    tc.input,
                     df=df,
                     sql_engine=sql_engine,
                     client=client,
                 )
                 tool_calls.append(
                     ToolCallRecord(
-                        tool_name=block.name,
-                        tool_input=dict(block.input),
+                        tool_name=tc.name,
+                        tool_input=dict(tc.input),
                         result=result,
                     )
                 )
                 all_figures.extend(result.figures)
                 all_plotly_figures.extend(result.plotly_figures)
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result.summary,
-                    }
-                )
+                raw_results.append({"id": tc.id, "content": result.summary})
 
-            history.append({"role": "user", "content": tool_results})
+            # extend (not append) — OpenAI returns a list of separate messages
+            history.extend(client.build_tool_result_entries(raw_results))
             continue
 
         # Unexpected stop_reason (e.g. "max_tokens")
@@ -159,12 +158,3 @@ def run_agent_turn(
         plotly_figures=tuple(all_plotly_figures),
         token_usage=client.usage,
     )
-
-
-def _extract_text(response: Any) -> str:
-    """Pull plain text out of a Message response."""
-    parts: list[str] = []
-    for block in response.content:
-        if hasattr(block, "text"):
-            parts.append(block.text)
-    return "\n".join(parts).strip()

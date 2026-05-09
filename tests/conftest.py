@@ -11,7 +11,7 @@ import openpyxl
 import pandas as pd
 import pytest
 
-from src.agent.client import TokenUsage
+from src.agent.base import AgentResponse, BaseLLMClient, TokenUsage, ToolCall
 from src.data.schema import describe_schema
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
@@ -90,26 +90,69 @@ class FakeToolUseBlock:
 
 @dataclass
 class FakeMessage:
-    stop_reason: str
-    content: list
+    """Thin description of a scripted response (used to build AgentResponse)."""
+
+    stop_reason: str   # "end_turn" | "tool_use"
+    content: list      # kept for backward compat; not used by new loop
 
 
 # ── FakeLLMClient ─────────────────────────────────────────────────────────────
 
-class FakeLLMClient:
-    """Deterministic stand-in for LLMClient.
+class FakeLLMClient(BaseLLMClient):
+    """Deterministic stand-in for any BaseLLMClient implementation.
 
-    Pass a list of FakeMessage objects; each call() pops the next one.
+    Pass a list of FakeMessage objects; each call() pops the next one and
+    returns a normalised AgentResponse so the loop's provider-agnostic path
+    is exercised.
     """
 
     def __init__(self, responses: list[FakeMessage]) -> None:
         self._queue: deque[FakeMessage] = deque(responses)
         self.calls: list[dict] = []  # recorded for assertions
-        self.usage: TokenUsage = TokenUsage()  # mirrors LLMClient interface
+        self.usage: TokenUsage = TokenUsage()
 
-    def call(self, *, system: str, messages: list[dict], tools: list[dict]) -> FakeMessage:
+    def call(
+        self, *, system: str, messages: list[dict], tools: list[dict]
+    ) -> AgentResponse:
         # deepcopy so mutations after this call don't corrupt recorded history
-        self.calls.append({"system": system, "messages": copy.deepcopy(messages), "tools": tools})
+        self.calls.append(
+            {"system": system, "messages": copy.deepcopy(messages), "tools": tools}
+        )
         if not self._queue:
             raise RuntimeError("FakeLLMClient ran out of responses")
-        return self._queue.popleft()
+        raw = self._queue.popleft()
+
+        # Convert FakeMessage into a normalised AgentResponse
+        text = ""
+        tool_calls: list[ToolCall] = []
+        for block in raw.content:
+            if isinstance(block, FakeTextBlock):
+                text += block.text
+            elif isinstance(block, FakeToolUseBlock):
+                tool_calls.append(
+                    ToolCall(id=block.id, name=block.name, input=dict(block.input))
+                )
+
+        stop = "end_turn" if raw.stop_reason == "end_turn" else "tool_use"
+        return AgentResponse(
+            stop_reason=stop,
+            text=text.strip(),
+            tool_calls=tuple(tool_calls),
+            _raw=raw,
+        )
+
+    def build_assistant_entry(self, response: AgentResponse) -> dict:
+        """Mirrors Anthropic-style history for test assertions."""
+        return {"role": "assistant", "content": response._raw.content}
+
+    def build_tool_result_entries(self, results: list[dict]) -> list[dict]:
+        """Mirrors Anthropic-style history for test assertions."""
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": r["id"], "content": r["content"]}
+                    for r in results
+                ],
+            }
+        ]

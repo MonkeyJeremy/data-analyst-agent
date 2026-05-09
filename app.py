@@ -6,7 +6,8 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.agent.client import LLMClient
+from src.agent.client import create_client
+from src.config import PROVIDERS
 from src.agent.loop import run_agent_turn
 from src.data.layout import detect_layout
 from src.data.loader import load_tabular
@@ -84,26 +85,46 @@ def _init_session_state() -> None:
             st.session_state[key] = val
 
 
-def _get_api_key(sidebar_key: str) -> str | None:
-    return sidebar_key.strip() or os.getenv("ANTHROPIC_API_KEY") or None
+def _get_api_key(sidebar_key: str, provider: str) -> str | None:
+    key_env = PROVIDERS.get(provider, {}).get("key_env", "ANTHROPIC_API_KEY")
+    return sidebar_key.strip() or os.getenv(key_env) or None
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 
-def _render_sidebar() -> str:
-    """Render sidebar and return the API key string (may be empty)."""
+def _render_sidebar() -> tuple[str, str, str]:
+    """Render sidebar and return (api_key_input, provider, model)."""
     with st.sidebar:
         st.markdown("## 📊 Data Analyst Agent")
         st.markdown("<hr>", unsafe_allow_html=True)
 
-        # API key
-        st.markdown("#### 🔑 API Key")
-        api_key_input = st.text_input(
-            "Anthropic API Key",
-            type="password",
-            placeholder="sk-ant-...",
+        # ── Provider + model selection ────────────────────────────────────────
+        st.markdown("#### 🔑 API Configuration")
+        provider = st.selectbox(
+            "Provider",
+            options=list(PROVIDERS.keys()),
+            key="_provider",
             label_visibility="collapsed",
-            help="Leave blank to use the ANTHROPIC_API_KEY environment variable.",
+        )
+        provider_cfg = PROVIDERS[provider]
+
+        model = st.selectbox(
+            "Model",
+            options=provider_cfg["models"],
+            index=0,
+            key=f"_model_{provider}",
+            label_visibility="collapsed",
+        )
+
+        api_key_input = st.text_input(
+            f"{provider} API Key",
+            type="password",
+            placeholder=provider_cfg["key_placeholder"],
+            label_visibility="collapsed",
+            help=(
+                f"Leave blank to use the {provider_cfg['key_env']} "
+                "environment variable."
+            ),
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -158,7 +179,7 @@ def _render_sidebar() -> str:
                 _reset_all_state()
                 st.rerun()
 
-    return api_key_input
+    return api_key_input, provider, model
 
 
 def _render_token_meter() -> None:
@@ -413,15 +434,16 @@ def _render_suggestions() -> None:
 
 # ── Agent turn ────────────────────────────────────────────────────────────────
 
-def _run_query(prompt: str, api_key: str) -> None:
+def _run_query(prompt: str, api_key: str, provider: str, model: str) -> None:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.spinner("🤔 Analysing…"):
         try:
+            client = create_client(provider=provider, api_key=api_key, model=model)
             if st.session_state.get("_mode") == "sql":
                 sql_conn = st.session_state.sql_connection
                 sql_schema = describe_sql_schema(sql_conn.engine)
                 result = run_agent_turn(
-                    client=LLMClient(api_key=api_key),
+                    client=client,
                     messages=st.session_state.messages,
                     sql_engine=sql_conn.engine,
                     sql_schema=sql_schema,
@@ -431,7 +453,7 @@ def _run_query(prompt: str, api_key: str) -> None:
                 eda_summary = eda.narrative if eda is not None else None
                 text_cols = tuple(eda.text_cols) if eda is not None else ()
                 result = run_agent_turn(
-                    client=LLMClient(api_key=api_key),
+                    client=client,
                     messages=st.session_state.messages,
                     df=st.session_state.df,
                     schema=st.session_state.schema,
@@ -460,7 +482,7 @@ def main() -> None:
     inject()
     _init_session_state()
 
-    api_key_input = _render_sidebar()
+    api_key_input, provider, model = _render_sidebar()
 
     # ── Layout confirmation / auto-fix banner ────────────────────────────────
     layout_result = st.session_state.get("_layout_result")
@@ -532,19 +554,21 @@ def main() -> None:
     if st.session_state.pending_query:
         pending = st.session_state.pending_query
         st.session_state.pending_query = None
-        api_key = _get_api_key(api_key_input)
+        api_key = _get_api_key(api_key_input, provider)
         if not api_key:
-            st.error("No API key found. Enter one in the sidebar or set ANTHROPIC_API_KEY.")
+            key_env = PROVIDERS.get(provider, {}).get("key_env", "ANTHROPIC_API_KEY")
+            st.error(f"No API key found. Enter one in the sidebar or set {key_env}.")
             return
-        _run_query(pending, api_key)
+        _run_query(pending, api_key, provider, model)
         return
 
     if prompt := st.chat_input("Ask a question about your data…"):
-        api_key = _get_api_key(api_key_input)
+        api_key = _get_api_key(api_key_input, provider)
         if not api_key:
-            st.error("No API key found. Enter one in the sidebar or set ANTHROPIC_API_KEY.")
+            key_env = PROVIDERS.get(provider, {}).get("key_env", "ANTHROPIC_API_KEY")
+            st.error(f"No API key found. Enter one in the sidebar or set {key_env}.")
             return
-        _run_query(prompt, api_key)
+        _run_query(prompt, api_key, provider, model)
 
 
 if __name__ == "__main__":
