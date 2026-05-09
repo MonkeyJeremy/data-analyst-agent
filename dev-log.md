@@ -2,6 +2,60 @@
 
 ---
 
+## Session 8 — 2026-05-09: v6 Multi-Provider Support
+
+### Summary
+Decoupled the ReAct loop from the Anthropic SDK by introducing a `BaseLLMClient` ABC with normalized `AgentResponse`/`ToolCall`/`TokenUsage` types. Added `AnthropicClient` (with prompt caching) and `OpenAIClient` (with tool-schema conversion) as concrete providers. The sidebar now exposes a provider + model selectbox. `FakeLLMClient` in tests extends `BaseLLMClient` directly. Fixed 5 failing tests in `test_text_analyzer.py` caused by the provider-agnostic `response.text` API. 129 tests, all passing.
+
+---
+
+### [DECISION] Provider abstraction via ABC + normalized AgentResponse
+The loop used to directly access `response.content` (Anthropic SDK type). To support OpenAI we needed a clean seam. Created `src/agent/base.py` with:
+- `ToolCall(id, name, input)` — frozen dataclass
+- `AgentResponse(stop_reason, text, tool_calls, _raw)` — normalized response
+- `TokenUsage` — accumulates cross-provider token counts
+- `BaseLLMClient` — ABC with `call()`, `build_assistant_entry()`, `build_tool_result_entries()`
+
+Each provider implements the three methods. The loop is now pure ABC code. `LLMClient = AnthropicClient` alias preserved for backward compat.
+
+---
+
+### [DECISION] `build_tool_result_entries()` returns `list[dict]`, loop uses `history.extend()`
+Anthropic wraps all tool results in one user message with a `tool_result` block list. OpenAI requires separate `{"role": "tool", ...}` messages per result. Returning `list[dict]` from `build_tool_result_entries()` and using `history.extend()` (not `history.append()`) unifies both formats without branching in the loop.
+
+---
+
+### [DECISION] OpenAI tool schema conversion in `OpenAIClient._convert_tool()`
+Internal tool schemas use `input_schema` (Anthropic format). OpenAI requires `{"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}`. Conversion is a pure function inside `OpenAIClient`, keeping the internal schema format stable.
+
+---
+
+### [FIX] `test_text_analyzer.py` fake clients returned `SimpleNamespace(content=[block])` with no `.text`
+After the provider refactor, `analyzer.py` reads `response.text` instead of scanning `response.content`. The five failing tests used inline fake clients returning `SimpleNamespace(content=[block])`. Fixed by changing all fake `_call()` returns to `SimpleNamespace(text=json_str)`.
+
+---
+
+### Files created
+| File | Purpose |
+|------|---------|
+| `src/agent/base.py` | `AgentResponse`, `ToolCall`, `TokenUsage`, `BaseLLMClient` ABC |
+| `src/agent/providers/__init__.py` | Package marker |
+| `src/agent/providers/anthropic_provider.py` | `AnthropicClient` with prompt caching |
+| `src/agent/providers/openai_provider.py` | `OpenAIClient` with tool-schema conversion |
+
+### Files modified
+| File | Change |
+|------|--------|
+| `src/agent/client.py` | Rewritten as factory: `create_client(provider, api_key, model)` + `LLMClient` alias |
+| `src/agent/loop.py` | Uses `BaseLLMClient`, `response.text`, `response.tool_calls`; `history.extend()` |
+| `src/config.py` | `PROVIDERS` dict with Anthropic + OpenAI model lists and env var names |
+| `app.py` | Provider + model selectboxes; dynamic API key env var lookup |
+| `tests/conftest.py` | `FakeLLMClient` extends `BaseLLMClient`, returns `AgentResponse` |
+| `tests/test_text_analyzer.py` | Fake clients return `SimpleNamespace(text=...)` not `content=[block]` |
+| `pyproject.toml` | `openai` optional dep; `all` extras group |
+
+---
+
 ## Session 6 — 2026-05-07: v4 Text Analysis
 
 ### Summary

@@ -295,6 +295,23 @@ This discipline was maintained across all five sessions:
 
 ---
 
+### Session 8 — v6 Multi-Provider Support (2026-05-09)
+
+**Trigger:** User requested the agent support OpenAI models alongside Anthropic, not just one API key format.
+
+**Built:**
+- **`src/agent/base.py`** — `BaseLLMClient` ABC with normalised `AgentResponse`, `ToolCall`, and `TokenUsage` types that are SDK-agnostic. The loop now operates entirely on these types.
+- **`AnthropicClient`** (`providers/anthropic_provider.py`) — wraps existing logic, preserves prompt caching, converts SDK `ContentBlock` list → `AgentResponse`.
+- **`OpenAIClient`** (`providers/openai_provider.py`) — lazy-imports `openai`, converts internal `input_schema` → OpenAI `type: function` wrapper, handles tool-call message format differences.
+- **`create_client(provider, api_key, model)`** factory in `client.py` — replaces direct class instantiation; `LLMClient = AnthropicClient` alias kept for backward compat.
+- **`PROVIDERS` config** — `src/config.py` maps provider names to model lists, default models, env var names, and placeholder strings.
+- **`app.py` sidebar** — provider selectbox → model selectbox → API key field (label and placeholder change per provider).
+- `FakeLLMClient` in `conftest.py` extended to inherit `BaseLLMClient` directly; returns `AgentResponse` objects.
+- Fixed 5 tests in `test_text_analyzer.py` whose fake clients returned `SimpleNamespace(content=[block])` instead of `SimpleNamespace(text=...)`.
+- 129 tests, all passing.
+
+---
+
 ## 7. Key Engineering Decisions
 
 ### 7.1 Stateless Full-History Replay
@@ -423,6 +440,43 @@ for node in ast.walk(tree):
 ```
 
 The blocked set covers filesystem, network, process, memory, serialisation, and IPC modules. The check catches both `import os` and `from os.path import join`. If blocked, a `SecurityError` `ExecutionResult` is returned immediately — the code never reaches `exec()`. This is a meaningful first defence; production would add Docker container isolation.
+
+### 7.10 Multi-Provider Abstraction via `BaseLLMClient` ABC
+
+The loop's original tight coupling to the Anthropic SDK made adding a second provider non-trivial — the loop accessed `response.content[i].type`, `response.content[i].name`, and other SDK-specific fields directly.
+
+The abstraction uses three normalised types that all providers map into:
+
+```python
+@dataclass(frozen=True)
+class ToolCall:
+    id: str; name: str; input: dict
+
+@dataclass
+class AgentResponse:
+    stop_reason: str          # "end_turn" | "tool_use"
+    text: str                 # concatenated text blocks
+    tool_calls: tuple[ToolCall, ...]
+    _raw: Any = None          # provider-specific object for build_*() methods
+
+class BaseLLMClient(ABC):
+    usage: TokenUsage
+    def call(self, *, system, messages, tools) -> AgentResponse: ...
+    def build_assistant_entry(self, response) -> dict: ...
+    def build_tool_result_entries(self, results) -> list[dict]: ...
+```
+
+The **history format** differs per provider:
+- Anthropic: tool results arrive in a single `{"role": "user", "content": [tool_result, ...]}` message
+- OpenAI: each tool result is a separate `{"role": "tool", "tool_call_id": ..., "content": ...}` message
+
+Solved by making `build_tool_result_entries()` return `list[dict]` and using `history.extend()` in the loop — one line handles both formats transparently.
+
+The **tool schema** format also differs:
+- Internal / Anthropic: `{"name": ..., "input_schema": {...}}`
+- OpenAI: `{"type": "function", "function": {"name": ..., "parameters": {...}}}`
+
+Solved by a `_convert_tool()` pure function inside `OpenAIClient`, keeping the internal schema stable.
 
 ### 7.11 JSON Normalisation Strategy
 
