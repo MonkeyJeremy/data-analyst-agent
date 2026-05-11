@@ -13,3 +13,4 @@ venv/
 .streamlit/secrets.toml
 uploads/
 PROJECT_REPORT.md
+PROJECT_REPORT.html
