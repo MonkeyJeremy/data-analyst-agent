@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 import streamlit as st
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def render_chat_history(messages: list[dict]) -> None:
@@ -77,6 +81,62 @@ def render_turn_figures(
 
     for fig_bytes in figures:
         st.image(fig_bytes, use_container_width=False)
+
+
+def render_turn_downloads(
+    plotly_figures: tuple,
+    question: str,
+    answer: str,
+    tool_calls: tuple,
+    df: "pd.DataFrame | None",
+) -> None:
+    """Render download buttons below the latest agent turn's charts."""
+    buttons: list[tuple] = []
+
+    for i, fig_json in enumerate(plotly_figures, start=1):
+        try:
+            import plotly.io as pio
+            fig = pio.from_json(fig_json)
+
+            html_bytes = fig.to_html(include_plotlyjs="cdn").encode()
+            buttons.append((f"⬇ Chart {i} HTML", html_bytes, f"chart_{i}.html", "text/html"))
+
+            try:
+                png_bytes = fig.to_image(format="png", scale=2)
+                buttons.append((f"⬇ Chart {i} PNG", png_bytes, f"chart_{i}.png", "image/png"))
+            except Exception:
+                pass  # kaleido not installed
+
+        except Exception:
+            continue
+
+    if df is not None:
+        csv_bytes = df.to_csv(index=False).encode()
+        buttons.append(("⬇ Dataset CSV", csv_bytes, "dataset.csv", "text/csv"))
+
+    if question or answer:
+        md_parts = [f"# Analysis\n\n**Question:** {question}\n\n**Answer:**\n{answer}"]
+        for i, tc in enumerate(tool_calls, start=1):
+            if tc.tool_name == "execute_python":
+                code = tc.tool_input.get("code", "")
+                purpose = tc.tool_input.get("purpose", "")
+                md_parts.append(f"\n## Code Block {i}\n\n_{purpose}_\n\n```python\n{code}\n```")
+                if tc.result.stdout.strip():
+                    md_parts.append(f"\n**Output:**\n```\n{tc.result.stdout.strip()}\n```")
+            elif tc.tool_name == "execute_sql":
+                query = tc.tool_input.get("query", "")
+                purpose = tc.tool_input.get("purpose", "")
+                md_parts.append(f"\n## SQL Query {i}\n\n_{purpose}_\n\n```sql\n{query}\n```")
+        md_bytes = "\n".join(md_parts).encode()
+        buttons.append(("⬇ Analysis MD", md_bytes, "analysis.md", "text/markdown"))
+
+    if not buttons:
+        return
+
+    cols = st.columns(len(buttons))
+    for col, (label, data, filename, mime) in zip(cols, buttons):
+        with col:
+            st.download_button(label, data=data, file_name=filename, mime=mime)
 
 
 def _render_plotly_centred(fig: object) -> None:

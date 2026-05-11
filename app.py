@@ -7,6 +7,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from src.agent.client import create_client
+from src.agent.viz_planner import plan_visualization, build_viz_hint
 from src.config import PROVIDERS
 from src.agent.loop import run_agent_turn
 from src.data.layout import detect_layout
@@ -16,7 +17,7 @@ from src.db.connection import connect_sqlite_file
 from src.db.executor import load_table
 from src.db.schema import describe_sql_schema
 from src.eda.auto_eda import run_auto_eda
-from src.ui.chat_panel import render_chat_history, render_turn_figures
+from src.ui.chat_panel import render_chat_history, render_turn_figures, render_turn_downloads
 from src.ui.eda_panel import render_eda_panel
 from src.ui.layout_panel import _CANCEL_SENTINEL, render_layout_panel
 from src.ui.sql_panel import render_sql_connect_panel, render_sql_stats
@@ -66,6 +67,9 @@ def _init_session_state() -> None:
         "messages": [],
         "last_figures": (),
         "last_plotly_figures": (),
+        "last_tool_calls": (),       # ToolCallRecord tuple from most recent turn
+        "last_question": "",         # user question from most recent turn
+        "last_answer": "",           # agent answer from most recent turn
         "_last_filename": None,
         "pending_query": None,       # set by suggestion chips
         "_layout_result": None,      # LayoutResult from last detection
@@ -74,6 +78,8 @@ def _init_session_state() -> None:
         "sql_connection": None,      # SQLConnection | None
         "sql_tables": None,          # list[str] | None — multi-table picker
         "_mode": "dataframe",        # "dataframe" | "sql"
+        # Execution mode
+        "execution_mode": "local",   # "local" | "e2b" | "docker"
         # Token metering
         "session_input_tokens": 0,
         "session_output_tokens": 0,
@@ -126,6 +132,17 @@ def _render_sidebar() -> tuple[str, str, str]:
                 "environment variable."
             ),
         )
+
+        st.markdown("#### ⚙️ Execution Mode")
+        execution_mode = st.selectbox(
+            "Execution mode",
+            options=["local", "e2b", "docker"],
+            index=0,
+            key="_execution_mode",
+            label_visibility="collapsed",
+            help="Local runs code in-process. E2B/Docker require extra setup.",
+        )
+        st.session_state.execution_mode = execution_mode
         st.markdown("<br>", unsafe_allow_html=True)
 
         # File upload
@@ -150,6 +167,9 @@ def _render_sidebar() -> tuple[str, str, str]:
             st.session_state.messages = []
             st.session_state.last_figures = ()
             st.session_state.last_plotly_figures = ()
+            st.session_state.last_tool_calls = ()
+            st.session_state.last_question = ""
+            st.session_state.last_answer = ""
             st.session_state.df = None
             st.session_state.schema = None
             st.session_state.eda = None
@@ -219,6 +239,9 @@ def _reset_all_state() -> None:
     st.session_state.messages = []
     st.session_state.last_figures = ()
     st.session_state.last_plotly_figures = ()
+    st.session_state.last_tool_calls = ()
+    st.session_state.last_question = ""
+    st.session_state.last_answer = ""
     st.session_state.pending_query = None
     st.session_state._mode = "dataframe"
     st.session_state.session_input_tokens = 0
@@ -236,6 +259,9 @@ def _commit_upload(df: object, filename: str) -> None:
     st.session_state.messages = []
     st.session_state.last_figures = ()
     st.session_state.last_plotly_figures = ()
+    st.session_state.last_tool_calls = ()
+    st.session_state.last_question = ""
+    st.session_state.last_answer = ""
     st.session_state["_last_filename"] = filename
     st.session_state.pending_query = None
     st.session_state._mode = "dataframe"
@@ -439,6 +465,7 @@ def _run_query(prompt: str, api_key: str, provider: str, model: str) -> None:
     with st.spinner("🤔 Analysing…"):
         try:
             client = create_client(provider=provider, api_key=api_key, model=model)
+            viz_hint = build_viz_hint(plan_visualization(prompt))
             if st.session_state.get("_mode") == "sql":
                 sql_conn = st.session_state.sql_connection
                 sql_schema = describe_sql_schema(sql_conn.engine)
@@ -459,10 +486,14 @@ def _run_query(prompt: str, api_key: str, provider: str, model: str) -> None:
                     schema=st.session_state.schema,
                     eda_summary=eda_summary,
                     text_cols=text_cols,
+                    viz_hint=viz_hint,
                 )
             st.session_state.messages = result.messages
             st.session_state.last_figures = result.figures
             st.session_state.last_plotly_figures = result.plotly_figures
+            st.session_state.last_tool_calls = result.tool_calls
+            st.session_state.last_question = prompt
+            st.session_state.last_answer = result.final_text
             # Accumulate token usage for the sidebar meter
             if result.token_usage is not None:
                 st.session_state.session_input_tokens += result.token_usage.input_tokens
@@ -548,6 +579,13 @@ def main() -> None:
         render_turn_figures(
             st.session_state.last_figures,
             st.session_state.last_plotly_figures,
+        )
+        render_turn_downloads(
+            plotly_figures=st.session_state.last_plotly_figures,
+            question=st.session_state.get("last_question", ""),
+            answer=st.session_state.get("last_answer", ""),
+            tool_calls=st.session_state.get("last_tool_calls", ()),
+            df=st.session_state.df,
         )
 
     # Handle a suggestion chip click (fires before chat_input check)

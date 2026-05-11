@@ -2,6 +2,59 @@
 
 ---
 
+## Session 9 — 2026-05-11: v7 Analyst UX
+
+### Summary
+Implemented all P0 and P1 improvements from the mentor roadmap. The agent now makes every answer inspectable and downloadable, validates and auto-repairs bad charts, abstracts the execution backend for future sandboxing, and uses a lightweight visualization planner to guide chart-type selection. 175 tests passing (up from 129).
+
+---
+
+### [DECISION] Chart validation injects correction into tool result summary, not as a new user message
+Two approaches were considered: (A) append a new user turn after a bad chart, (B) augment the `ExecutionResult.summary` that goes back to the LLM as the tool result content. Chose B. It keeps the correction inside the tool result where the LLM expects feedback, doesn't add an extra user/assistant pair to history, and doesn't burn an extra iteration. The LLM sees the chart issues in the same "turn" as the code execution and can fix them in the next iteration naturally.
+
+---
+
+### [DECISION] Visualization planner uses keyword matching, no LLM call
+A pre-call LLM classifier for chart type would add latency and token cost on every query. A keyword classifier (7 intents, ~80 keywords) resolves intent in microseconds, is fully deterministic, and is easy to tune by reading the list. It produces a hint injected into the system prompt — not a hard constraint — so the LLM can override it when the data suggests a better chart. False negatives (no intent detected) are silent; the agent just proceeds without the hint.
+
+---
+
+### [DECISION] `ExecutionBackend` ABC wraps existing module-level `execute_python()` via `LocalPythonExecutor`
+The goal was to add the abstraction layer without touching any of the 129 existing tests. The module-level `execute_python()` function is preserved unchanged. `LocalPythonExecutor` is a thin class that delegates to it. `dispatch_tool()` in `tools.py` still calls the module-level function directly — no behavior change. The abstraction lives at the boundary level (factory + stubs) ready for E2B/Docker without requiring a refactor of existing code.
+
+---
+
+### [DECISION] Download buttons appear only when charts are present; Dataset CSV always included
+The download row appears only after a turn that produced Plotly figures — not after pure text answers. This keeps the UI clean for non-chart responses. The "Dataset CSV" button is always included in the row (when in DataFrame mode) because users often want to export filtered data they've been exploring. PNG export is silently skipped if `kaleido` is not installed rather than showing an error.
+
+---
+
+### Files created
+| File | Purpose |
+|------|---------|
+| `src/execution/backend.py` | `ExecutionBackend` ABC |
+| `src/execution/backend_factory.py` | `get_backend("local"\|"e2b"\|"docker")` factory |
+| `src/execution/e2b_executor.py` | E2B stub (raises `NotImplementedError`) |
+| `src/execution/docker_executor.py` | Docker stub (raises `NotImplementedError`) |
+| `src/execution/chart_validator.py` | `validate_figures()` + correction prompt generation |
+| `src/agent/viz_planner.py` | `plan_visualization()` keyword classifier + `build_viz_hint()` |
+| `tests/test_chart_validator.py` | 13 validation tests |
+| `tests/test_viz_planner.py` | 15 intent + hint tests |
+| `tests/test_backend_factory.py` | 6 backend factory tests |
+
+### Files modified
+| File | Change |
+|------|--------|
+| `src/agent/loop.py` | Import `validate_figures`; add `viz_hint` param; augment tool result summary on bad charts |
+| `src/agent/system_prompt.py` | Accept `viz_hint` kwarg; append to prompt when non-empty |
+| `src/execution/python_executor.py` | Import `ExecutionBackend`; add `LocalPythonExecutor` class at end of module |
+| `src/config.py` | Add `EXECUTION_MODE = "local"` constant |
+| `src/ui/chat_panel.py` | Add `render_turn_downloads()` (HTML/PNG/CSV/Markdown export buttons) |
+| `app.py` | Add `viz_planner` import; `execution_mode` session state + sidebar selector; persist `last_tool_calls/question/answer`; call `render_turn_downloads` |
+| `README.md` | Positioning statement, "Why this is different" table, screenshot placeholders, v7 build phase row |
+
+---
+
 ## Session 8 — 2026-05-09: v6 Multi-Provider Support
 
 ### Summary

@@ -12,6 +12,7 @@ from src.agent.system_prompt import build_system_prompt, build_sql_system_prompt
 from src.agent.tools import get_tool_schemas, dispatch_tool
 from src.config import MAX_TOOL_ITERATIONS
 from src.data.schema import SchemaContext
+from src.execution.chart_validator import validate_figures
 from src.execution.result import ExecutionResult
 
 
@@ -41,6 +42,7 @@ def run_agent_turn(
     sql_engine: Any | None = None,
     sql_schema: tuple | None = None,
     text_cols: tuple[str, ...] = (),
+    viz_hint: str = "",
 ) -> TurnResult:
     """Run one user turn through the bounded ReAct loop.
 
@@ -91,7 +93,7 @@ def run_agent_turn(
     else:
         if schema is None:
             raise ValueError("schema must be provided for DataFrame mode.")
-        system = build_system_prompt(schema, eda_summary, text_cols=text_cols)
+        system = build_system_prompt(schema, eda_summary, text_cols=text_cols, viz_hint=viz_hint)
 
     has_text_cols = bool(text_cols) and not is_sql
     tools = get_tool_schemas(mode, has_text_cols=has_text_cols)
@@ -129,6 +131,15 @@ def run_agent_turn(
                     sql_engine=sql_engine,
                     client=client,
                 )
+
+                # Validate Plotly figures; append issues to the summary so the
+                # LLM can self-correct on the next iteration.
+                summary = result.summary
+                if tc.name == "execute_python" and result.plotly_figures:
+                    validation = validate_figures(result.plotly_figures)
+                    if not validation.valid:
+                        summary = summary + "\n\n" + validation.correction_prompt
+
                 tool_calls.append(
                     ToolCallRecord(
                         tool_name=tc.name,
@@ -138,7 +149,7 @@ def run_agent_turn(
                 )
                 all_figures.extend(result.figures)
                 all_plotly_figures.extend(result.plotly_figures)
-                raw_results.append({"id": tc.id, "content": result.summary})
+                raw_results.append({"id": tc.id, "content": summary})
 
             # extend (not append) — OpenAI returns a list of separate messages
             history.extend(client.build_tool_result_entries(raw_results))

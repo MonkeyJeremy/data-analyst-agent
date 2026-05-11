@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import seaborn as sns
 
+from src.execution.backend import ExecutionBackend
 from src.execution.result import ExecutionResult
 
 matplotlib.use("Agg")  # non-interactive backend; must be set before any plt use
@@ -221,3 +222,17 @@ def _build_summary(stdout: str, chart_count: int, error: str | None) -> str:
     if not parts:
         parts.append("Code executed successfully with no output.")
     return "\n".join(parts)
+
+
+class LocalPythonExecutor(ExecutionBackend):
+    """In-process Python executor with AST-level import sandboxing.
+
+    Delegates to :func:`execute_python` so all existing safety logic is reused.
+    """
+
+    @property
+    def name(self) -> str:
+        return "local"
+
+    def execute(self, code: str, df: pd.DataFrame) -> ExecutionResult:
+        return execute_python(code, df)

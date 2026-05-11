@@ -7,6 +7,7 @@ def build_system_prompt(
     schema: SchemaContext,
     eda_summary: str | None = None,
     text_cols: tuple[str, ...] = (),
+    viz_hint: str = "",
 ) -> str:
     """Build the system prompt for DataFrame mode (execute_python tool)."""
     prompt = f"""\
@@ -47,6 +48,9 @@ You have access to the analyze_text tool. Use it when the user asks about sentim
 topics, tone, intent, or any text classification task.
 Workflow: sample the column first with df['col'].dropna().head(30).tolist(), then call
 analyze_text with those texts and a clear task description."""
+
+    if viz_hint:
+        prompt += viz_hint
 
     return prompt
 

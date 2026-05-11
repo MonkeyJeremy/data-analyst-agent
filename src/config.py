@@ -2,6 +2,9 @@ MODEL_NAME = "claude-sonnet-4-6"
 MAX_TOKENS = 4096
 MAX_TOOL_ITERATIONS = 5
 
+# Execution backend: "local" | "e2b" | "docker"
+EXECUTION_MODE = "local"
+
 # ── Provider registry ─────────────────────────────────────────────────────────
 # Drives the sidebar UI selector and create_client() factory.
 PROVIDERS: dict[str, dict] = {
