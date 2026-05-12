@@ -17,7 +17,7 @@ class E2BExecutor(ExecutionBackend):
     def name(self) -> str:
         return "e2b"
 
-    def execute(self, code: str, df: pd.DataFrame) -> ExecutionResult:
+    def execute(self, code: str, dataframes: dict[str, pd.DataFrame]) -> ExecutionResult:
         raise NotImplementedError(
             "E2B backend is not yet configured. "
             "Set the E2B_API_KEY environment variable and install "

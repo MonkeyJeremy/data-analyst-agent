@@ -15,11 +15,16 @@ from src.execution.result import ExecutionResult
 
 
 class ExecutionBackend(ABC):
-    """Execute Python code against a DataFrame and return structured results."""
+    """Execute Python code against one or more DataFrames and return structured results."""
 
     @abstractmethod
-    def execute(self, code: str, df: pd.DataFrame) -> ExecutionResult:
-        """Run *code* with *df* available as the ``df`` variable."""
+    def execute(self, code: str, dataframes: dict[str, pd.DataFrame]) -> ExecutionResult:
+        """Run *code* with all *dataframes* available as named variables.
+
+        The dict maps variable name → DataFrame.  A ``"df"`` key is always
+        included as an alias for the primary (first-loaded) table so that
+        single-df agent code continues to work without modification.
+        """
 
     @property
     @abstractmethod

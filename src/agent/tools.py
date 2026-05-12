@@ -18,7 +18,9 @@ from src.execution.result import ExecutionResult
 _PYTHON_TOOL: dict = {
     "name": "execute_python",
     "description": (
-        "Execute Python code against the user's DataFrame (variable: `df`). "
+        "Execute Python code against the user's DataFrame(s). "
+        "All loaded DataFrames are available as named variables (see system prompt for names). "
+        "`df` is always an alias for the first/primary table. "
         "Pre-imported: pandas (pd), numpy (np), "
         "plotly.graph_objects (go), plotly.express (px), "
         "matplotlib.pyplot (plt), seaborn (sns). "
@@ -132,6 +134,7 @@ def dispatch_tool(
     name: str,
     tool_input: dict,
     df: pd.DataFrame | None = None,
+    dataframes: dict[str, pd.DataFrame] | None = None,
     sql_engine: Any | None = None,
     client: Any | None = None,
 ) -> ExecutionResult:
@@ -144,7 +147,12 @@ def dispatch_tool(
     tool_input:
         Tool input dict from the API response block.
     df:
-        DataFrame for DataFrame mode; ignored in SQL mode.
+        Deprecated single-DataFrame shorthand.  When *dataframes* is also
+        provided, *df* is ignored.  When only *df* is provided it is wrapped
+        in ``{"df": df}`` for backward compatibility.
+    dataframes:
+        All loaded DataFrames keyed by their registered name.  Should include
+        a ``"df"`` key as an alias for the primary table.
     sql_engine:
         SQLAlchemy engine for SQL mode; ignored in DataFrame mode.
 
@@ -169,7 +177,12 @@ def dispatch_tool(
         )
 
     if name == "execute_python":
-        if df is None:
+        # Resolve the dataframe namespace — prefer the explicit dict; fall back
+        # to wrapping the legacy single-df param for backward compatibility.
+        resolved: dict[str, pd.DataFrame] | None = dataframes
+        if resolved is None and df is not None:
+            resolved = {"df": df}
+        if resolved is None:
             return ExecutionResult(
                 stdout="",
                 error="No DataFrame available for execute_python.",
@@ -177,7 +190,7 @@ def dispatch_tool(
                 summary="ERROR: No DataFrame loaded.",
             )
         code = tool_input.get("code", "")
-        return execute_python(code, df)
+        return execute_python(code, resolved)
 
     if name == "execute_sql":
         if sql_engine is None:

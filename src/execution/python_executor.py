@@ -61,26 +61,21 @@ def _check_imports(code: str) -> str | None:
     return None
 
 
-def execute_python(code: str, df: pd.DataFrame) -> ExecutionResult:
-    """Execute code against a copy of df in a sandboxed namespace.
+def execute_python(code: str, dataframes: dict[str, pd.DataFrame]) -> ExecutionResult:
+    """Execute code against copies of all dataframes in a sandboxed namespace.
 
     Pre-imported names available in the namespace:
-      df, pd, np, plt, sns, go (plotly.graph_objects), px (plotly.express).
+      All DataFrames by their registered names, plus ``df`` as alias for the
+      primary table (for backward compatibility).
+      Also available: pd, np, plt, sns, go (plotly.graph_objects), px (plotly.express).
     stdout and stderr are captured.
     Plotly figures (preferred) are serialised to JSON; matplotlib figures fall
-    back to PNG bytes. The original df is never mutated.
+    back to PNG bytes. The original dataframes are never mutated.
     """
     import plotly.express as px  # local import keeps top-level fast
 
-    namespace: dict = {
-        "df": df.copy(),
-        "pd": pd,
-        "np": np,
-        "plt": plt,
-        "sns": sns,
-        "go": go,
-        "px": px,
-    }
+    namespace: dict = {name: df.copy() for name, df in dataframes.items()}
+    namespace.update({"pd": pd, "np": np, "plt": plt, "sns": sns, "go": go, "px": px})
     stdout_buf = io.StringIO()
     mpl_figures: list[bytes] = []
     plotly_figures: list[str] = []
@@ -234,5 +229,5 @@ class LocalPythonExecutor(ExecutionBackend):
     def name(self) -> str:
         return "local"
 
-    def execute(self, code: str, df: pd.DataFrame) -> ExecutionResult:
-        return execute_python(code, df)
+    def execute(self, code: str, dataframes: dict[str, pd.DataFrame]) -> ExecutionResult:
+        return execute_python(code, dataframes)

@@ -20,14 +20,26 @@ def test_dispatch_execute_python(sample_df):
     result = dispatch_tool(
         "execute_python",
         {"code": "print(len(df))", "purpose": "Count rows"},
-        sample_df,
+        df=sample_df,
+    )
+    assert result.error is None
+    assert str(len(sample_df)) in result.stdout
+
+
+def test_dispatch_execute_python_with_dataframes(sample_df):
+    """dispatch_tool accepts the new dataframes dict kwarg."""
+    ns = {"df": sample_df}
+    result = dispatch_tool(
+        "execute_python",
+        {"code": "print(len(df))", "purpose": "Count rows"},
+        dataframes=ns,
     )
     assert result.error is None
     assert str(len(sample_df)) in result.stdout
 
 
 def test_dispatch_unknown_tool_returns_error(sample_df):
-    result = dispatch_tool("nonexistent_tool", {}, sample_df)
+    result = dispatch_tool("nonexistent_tool", {}, df=sample_df)
     assert result.error is not None
     assert "nonexistent_tool" in result.error
     assert "ERROR" in result.summary
@@ -37,7 +49,7 @@ def test_dispatch_code_error_propagates(sample_df):
     result = dispatch_tool(
         "execute_python",
         {"code": "raise RuntimeError('test')", "purpose": "test"},
-        sample_df,
+        df=sample_df,
     )
     assert result.error is not None
     assert "RuntimeError" in result.error

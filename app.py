@@ -10,8 +10,10 @@ from src.agent.client import create_client
 from src.agent.viz_planner import plan_visualization, build_viz_hint
 from src.config import PROVIDERS
 from src.agent.loop import run_agent_turn
+from src.data.join_detector import detect_join_keys, JoinSuggestion
 from src.data.layout import detect_layout
 from src.data.loader import load_tabular
+from src.data.registry import DataFrameRegistry
 from src.data.schema import describe_schema
 from src.db.connection import connect_sqlite_file
 from src.db.executor import load_table
@@ -64,6 +66,11 @@ def _init_session_state() -> None:
         "df": None,
         "schema": None,
         "eda": None,                 # EDAReport computed on upload
+        # Multi-dataframe support
+        "registry": DataFrameRegistry(),
+        "join_suggestions": [],
+        "manual_joins": [],       # list[JoinSuggestion] — user-defined, persist across uploads
+        "active_df_name": None,      # name of df shown in EDA panel
         "messages": [],
         "last_figures": (),
         "last_plotly_figures": (),
@@ -74,6 +81,8 @@ def _init_session_state() -> None:
         "pending_query": None,       # set by suggestion chips
         "_layout_result": None,      # LayoutResult from last detection
         "_layout_file_bytes": None,  # raw bytes held for user confirmation
+        "_pending_upload_bytes": None,  # bytes of file awaiting layout confirm
+        "_pending_upload_name": None,   # filename awaiting layout confirm
         # SQL mode
         "sql_connection": None,      # SQLConnection | None
         "sql_tables": None,          # list[str] | None — multi-table picker
@@ -97,6 +106,97 @@ def _get_api_key(sidebar_key: str, provider: str) -> str | None:
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
+
+def _render_join_builder(registry: "DataFrameRegistry") -> None:
+    """Sidebar UI for manually defining a relationship between two tables."""
+    if registry.count() < 2:
+        return
+
+    with st.expander("➕ Define Relationship", expanded=False):
+        names = registry.names()
+
+        col1, col2 = st.columns(2)
+        left_table = col1.selectbox("Left table", names, key="jb_left_table")
+        right_options = [n for n in names if n != left_table]
+        right_table = col2.selectbox("Right table", right_options, key="jb_right_table")
+
+        left_entry = registry.get(left_table)
+        right_entry = registry.get(right_table)
+        if left_entry is None or right_entry is None:
+            return
+
+        left_cols = list(left_entry.df.columns)
+        right_cols = list(right_entry.df.columns)
+
+        col3, col4 = st.columns(2)
+        left_col = col3.selectbox("Left column", left_cols, key="jb_left_col")
+        right_col = col4.selectbox("Right column", right_cols, key="jb_right_col")
+
+        join_type = st.radio(
+            "Join type", ["inner", "left", "right", "outer"],
+            horizontal=True, key="jb_join_type"
+        )
+
+        if st.button("Add relationship", key="jb_add"):
+            new_join = JoinSuggestion(
+                left_table=left_table,
+                left_col=left_col,
+                right_table=right_table,
+                right_col=right_col,
+                match_rate=1.0,
+                join_type=join_type,
+                source="manual",
+            )
+            # Avoid exact duplicates
+            existing = st.session_state.manual_joins
+            already = any(
+                j.left_table == new_join.left_table and
+                j.left_col == new_join.left_col and
+                j.right_table == new_join.right_table and
+                j.right_col == new_join.right_col
+                for j in existing
+            )
+            if not already:
+                st.session_state.manual_joins = existing + [new_join]
+                st.rerun()
+
+
+def _render_relationships_panel(
+    manual_joins: list,
+    auto_joins: list,
+) -> None:
+    """Show all current relationships (manual + auto) with remove option for manual ones."""
+    all_joins = manual_joins + auto_joins
+    if not all_joins:
+        return
+
+    label = f"🔗 Relationships ({len(all_joins)})"
+    with st.expander(label, expanded=bool(manual_joins)):
+        if manual_joins:
+            st.caption("User-defined")
+            for i, j in enumerate(manual_joins):
+                col1, col2 = st.columns([5, 1])
+                col1.markdown(
+                    f"`{j.left_table}.{j.left_col}` → "
+                    f"`{j.right_table}.{j.right_col}` "
+                    f"({j.join_type})"
+                )
+                if col2.button("✕", key=f"rm_join_{i}"):
+                    updated = list(st.session_state.manual_joins)
+                    updated.pop(i)
+                    st.session_state.manual_joins = updated
+                    st.rerun()
+
+        if auto_joins:
+            st.caption("Auto-detected")
+            for j in auto_joins:
+                pct = int(j.match_rate * 100)
+                st.markdown(
+                    f"`{j.left_table}.{j.left_col}` → "
+                    f"`{j.right_table}.{j.right_col}` "
+                    f"({pct}% match, {j.join_type})"
+                )
+
 
 def _render_sidebar() -> tuple[str, str, str]:
     """Render sidebar and return (api_key_input, provider, model)."""
@@ -145,12 +245,54 @@ def _render_sidebar() -> tuple[str, str, str]:
         st.session_state.execution_mode = execution_mode
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # File upload
+        # File upload (multi-file)
         st.markdown("#### 📁 Data Source")
-        uploaded = render_file_upload()
+        uploaded_files = render_file_upload()
 
-        if uploaded is not None:
-            _handle_upload(uploaded)
+        if uploaded_files:
+            for uploaded in uploaded_files:
+                _handle_upload(uploaded)
+
+        # Loaded DataFrames list
+        registry: DataFrameRegistry = st.session_state.registry
+        if not registry.is_empty():
+            st.markdown("**Loaded tables:**")
+            for entry in registry.entries():
+                is_active = st.session_state.get("active_df_name") == entry.name
+                col_btn, col_remove = st.columns([4, 1])
+                # Clicking the name toggles the table view in the main area
+                label = f"{'▼' if is_active else '▶'} `{entry.name}` {entry.schema.n_rows:,}×{entry.schema.n_cols}"
+                if col_btn.button(
+                    label,
+                    key=f"_view_{entry.name}",
+                    use_container_width=True,
+                    help="Click to view / hide table data",
+                ):
+                    st.session_state.active_df_name = None if is_active else entry.name
+                    st.rerun()
+                if col_remove.button("✕", key=f"_rm_{entry.name}", help=f"Remove {entry.name}"):
+                    registry.remove(entry.name)
+                    # Re-sync backward-compat keys
+                    new_primary = registry.primary()
+                    if new_primary is not None:
+                        st.session_state.df = new_primary.df
+                        st.session_state.schema = new_primary.schema
+                        st.session_state.eda = new_primary.eda
+                        st.session_state.active_df_name = new_primary.name
+                    else:
+                        st.session_state.df = None
+                        st.session_state.schema = None
+                        st.session_state.eda = None
+                        st.session_state.active_df_name = None
+                    st.session_state.join_suggestions = detect_join_keys(registry)
+                    st.rerun()
+
+        # Manual relationship builder + combined relationships panel
+        _render_join_builder(registry)
+        _render_relationships_panel(
+            st.session_state.manual_joins,
+            st.session_state.join_suggestions,
+        )
 
         # SQL connect (live database)
         st.markdown("<br>", unsafe_allow_html=True)
@@ -175,16 +317,6 @@ def _render_sidebar() -> tuple[str, str, str]:
             st.session_state.eda = None
             st.session_state["_last_filename"] = "SQL connection"
             st.rerun()
-
-        # Dataset preview (DataFrame mode only)
-        if st.session_state.df is not None:
-            st.markdown("<hr>", unsafe_allow_html=True)
-            st.markdown("#### 🔍 Preview")
-            st.dataframe(
-                st.session_state.df.head(5),
-                use_container_width=True,
-                hide_index=False,
-            )
 
         # Token usage meter
         _render_token_meter()
@@ -232,10 +364,15 @@ def _reset_all_state() -> None:
     for key in (
         "df", "schema", "eda", "_last_filename",
         "_layout_result", "_layout_file_bytes",
+        "_pending_upload_bytes", "_pending_upload_name",
         "sql_connection", "sql_tables",
+        "active_df_name",
     ):
         st.session_state[key] = None
 
+    st.session_state.registry = DataFrameRegistry()
+    st.session_state.join_suggestions = []
+    st.session_state.manual_joins = []
     st.session_state.messages = []
     st.session_state.last_figures = ()
     st.session_state.last_plotly_figures = ()
@@ -250,20 +387,111 @@ def _reset_all_state() -> None:
     st.session_state.session_cache_write_tokens = 0
 
 
+def _build_join_suggestion_message(
+    registry: "DataFrameRegistry",
+    auto_joins: list,
+    manual_joins: list,
+) -> str:
+    """Build a proactive assistant message about detected/existing relationships.
+
+    Shown in the chat whenever a second (or later) file is uploaded.
+    Describes what was detected automatically; if manual joins already exist,
+    acknowledges them instead.
+    """
+    names = registry.names()
+    table_summary = ", ".join(f"**{n}**" for n in names)
+
+    lines: list[str] = [
+        f"I now have {registry.count()} tables loaded: {table_summary}.\n",
+    ]
+
+    if manual_joins:
+        lines.append(
+            f"You've defined {len(manual_joins)} relationship(s) manually — "
+            "I'll use those when joining.\n"
+        )
+    elif auto_joins:
+        lines.append(
+            f"I automatically detected {len(auto_joins)} relationship(s) "
+            "between these tables:\n"
+        )
+        for j in auto_joins:
+            pct = int(j.match_rate * 100)
+            lines.append(
+                f"- `{j.left_table}.{j.left_col}` → "
+                f"`{j.right_table}.{j.right_col}` "
+                f"({pct}% value overlap — suggested **{j.join_type}** join)"
+            )
+        lines.append("")
+        # Show a ready-to-use merge example for the top suggestion
+        top = auto_joins[0]
+        lines.append("Here's how to merge them:")
+        lines.append(f"```python\nmerged = {top.example_code()}\n```")
+        lines.append(
+            "\nYou can ask me to analyse the combined dataset directly, "
+            "or define your own relationships in the sidebar."
+        )
+    else:
+        lines.append(
+            "I couldn't detect obvious join keys automatically. "
+            "You can define relationships manually in the **➕ Define Relationship** "
+            "panel in the sidebar, or just ask me questions about each table individually."
+        )
+
+    return "\n".join(lines)
+
+
 def _commit_upload(df: object, filename: str) -> None:
-    """Persist a successfully loaded DataFrame and run schema + EDA."""
-    schema = describe_schema(df)
-    st.session_state.df = df
-    st.session_state.schema = schema
-    st.session_state.eda = run_auto_eda(df)
-    st.session_state.messages = []
-    st.session_state.last_figures = ()
-    st.session_state.last_plotly_figures = ()
-    st.session_state.last_tool_calls = ()
-    st.session_state.last_question = ""
-    st.session_state.last_answer = ""
+    """Add a successfully loaded DataFrame to the registry and refresh derived state.
+
+    Multiple calls accumulate DataFrames; the registry grows with each upload.
+    Backward-compat keys (``df``, ``schema``, ``eda``) are kept in sync with
+    the registry's primary entry so that existing single-df code paths work
+    without modification.
+    """
+    registry: DataFrameRegistry = st.session_state.registry
+    entry = registry.add(filename, df)
+
+    # Recompute join suggestions across all loaded DataFrames
+    st.session_state.join_suggestions = detect_join_keys(registry)
+
+    # Sync backward-compat keys from the primary entry
+    primary = registry.primary()
+    st.session_state.df = primary.df
+    st.session_state.schema = primary.schema
+    st.session_state.eda = primary.eda
+    st.session_state.active_df_name = primary.name
+
+    # Reset conversation on first upload (empty registry before this call had
+    # count == 1 now, so clear only when this is the very first file).
+    if registry.count() == 1:
+        st.session_state.messages = []
+        st.session_state.last_figures = ()
+        st.session_state.last_plotly_figures = ()
+        st.session_state.last_tool_calls = ()
+        st.session_state.last_question = ""
+        st.session_state.last_answer = ""
+        st.session_state.pending_query = None
+
+    # When a second (or later) file is added, inject a proactive assistant
+    # message describing auto-detected relationships and suggesting merges.
+    # Only fires when there are no user-defined manual joins (they already
+    # know the schema). Replaces any previous auto-suggestion so it stays fresh.
+    if registry.count() >= 2:
+        auto_joins = st.session_state.join_suggestions
+        manual_joins = st.session_state.get("manual_joins", [])
+        suggestion_msg = _build_join_suggestion_message(registry, auto_joins, manual_joins)
+        messages: list = st.session_state.messages
+        # Remove any previous auto-suggestion (identified by sentinel prefix)
+        messages = [m for m in messages if not m.get("_auto_join_hint")]
+        messages.append({
+            "role": "assistant",
+            "content": suggestion_msg,
+            "_auto_join_hint": True,   # sentinel — stripped before sending to LLM
+        })
+        st.session_state.messages = messages
+
     st.session_state["_last_filename"] = filename
-    st.session_state.pending_query = None
     st.session_state._mode = "dataframe"
     # Clear any SQL state
     old_conn = st.session_state.get("sql_connection")
@@ -274,8 +502,12 @@ def _commit_upload(df: object, filename: str) -> None:
 
 
 def _handle_upload(uploaded: object) -> None:
-    # Skip if this file is already loaded (or awaiting confirmation)
-    if st.session_state.get("_last_filename") == uploaded.name:
+    # Skip if this file is already loaded (check registry filenames list)
+    registry: DataFrameRegistry = st.session_state.registry
+    if uploaded.name in registry.filenames():
+        return
+    # Also skip if awaiting layout confirmation for this exact file
+    if st.session_state.get("_pending_upload_name") == uploaded.name:
         return
 
     try:
@@ -312,6 +544,8 @@ def _handle_upload(uploaded: object) -> None:
         st.session_state._layout_result = result
         st.session_state._layout_file_bytes = file_bytes
         st.session_state["_last_filename"] = uploaded.name
+        st.session_state._pending_upload_name = uploaded.name
+        st.session_state._pending_upload_bytes = file_bytes
 
         if result.status == "needs_confirmation":
             # Don't load yet — main() will render the confirmation panel
@@ -321,6 +555,8 @@ def _handle_upload(uploaded: object) -> None:
         df = load_tabular(
             io.BytesIO(file_bytes), uploaded.name, header=result.header_row
         )
+        st.session_state._pending_upload_name = None
+        st.session_state._pending_upload_bytes = None
         _commit_upload(df, uploaded.name)
 
     except ValueError as exc:
@@ -374,8 +610,25 @@ def _render_dataset_stats() -> None:
     schema = st.session_state.schema
     df = st.session_state.df
     filename = st.session_state.get("_last_filename", "dataset")
+    registry: DataFrameRegistry = st.session_state.registry
 
-    st.markdown(f"### 📂 `{filename}`")
+    if registry.count() > 1:
+        st.markdown(f"### 📂 {registry.count()} tables loaded")
+        for entry in registry.entries():
+            st.caption(
+                f"`{entry.name}` ({entry.filename}) — "
+                f"{entry.schema.n_rows:,} rows × {entry.schema.n_cols} cols"
+            )
+        # Show join suggestions if any
+        join_suggestions = st.session_state.get("join_suggestions", [])
+        if join_suggestions:
+            with st.expander("🔗 Detected join keys", expanded=False):
+                for j in join_suggestions:
+                    pct = int(j.match_rate * 100)
+                    st.code(j.example_code(), language="python")
+                    st.caption(f"{pct}% value overlap — suggested `{j.join_type}` join")
+    else:
+        st.markdown(f"### 📂 `{filename}`")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Rows", f"{schema.n_rows:,}")
@@ -466,25 +719,34 @@ def _run_query(prompt: str, api_key: str, provider: str, model: str) -> None:
         try:
             client = create_client(provider=provider, api_key=api_key, model=model)
             viz_hint = build_viz_hint(plan_visualization(prompt))
+
+            # Strip UI-only sentinel keys before sending to the LLM
+            llm_messages = [
+                {k: v for k, v in m.items() if k != "_auto_join_hint"}
+                for m in st.session_state.messages
+            ]
+
             if st.session_state.get("_mode") == "sql":
                 sql_conn = st.session_state.sql_connection
                 sql_schema = describe_sql_schema(sql_conn.engine)
                 result = run_agent_turn(
                     client=client,
-                    messages=st.session_state.messages,
+                    messages=llm_messages,
                     sql_engine=sql_conn.engine,
                     sql_schema=sql_schema,
                 )
             else:
                 eda = st.session_state.get("eda")
-                eda_summary = eda.narrative if eda is not None else None
                 text_cols = tuple(eda.text_cols) if eda is not None else ()
+                combined_joins = (
+                    st.session_state.manual_joins
+                    + st.session_state.get("join_suggestions", [])
+                )
                 result = run_agent_turn(
                     client=client,
-                    messages=st.session_state.messages,
-                    df=st.session_state.df,
-                    schema=st.session_state.schema,
-                    eda_summary=eda_summary,
+                    messages=llm_messages,
+                    registry=st.session_state.registry,
+                    join_suggestions=combined_joins,
                     text_cols=text_cols,
                     viz_hint=viz_hint,
                 )
@@ -565,9 +827,39 @@ def main() -> None:
     else:
         _render_dataset_stats()
 
+    # Table view panel — shown when user clicks a table name in the sidebar
+    if not is_sql_mode:
+        registry: DataFrameRegistry = st.session_state.registry
+        active_name = st.session_state.get("active_df_name")
+        active_entry = registry.get(active_name) if active_name else None
+        if active_entry is not None:
+            hdr_col, close_col = st.columns([6, 1])
+            hdr_col.markdown(
+                f"### 📋 `{active_entry.name}` "
+                f"<span style='font-size:0.85rem;color:gray;'>"
+                f"{active_entry.schema.n_rows:,} rows × {active_entry.schema.n_cols} cols"
+                f"</span>",
+                unsafe_allow_html=True,
+            )
+            if close_col.button("✕ Close", key="_close_table_view"):
+                st.session_state.active_df_name = None
+                st.rerun()
+            st.dataframe(
+                active_entry.df,
+                use_container_width=True,
+                hide_index=False,
+            )
+            st.divider()
+
     # EDA panel — DataFrame mode only
-    if not is_sql_mode and st.session_state.eda is not None:
-        render_eda_panel(st.session_state.eda, st.session_state.df)
+    if not is_sql_mode:
+        registry: DataFrameRegistry = st.session_state.registry
+        if registry.count() > 1:
+            chosen_entry = registry.get(st.session_state.get("active_df_name")) or registry.primary()
+            if chosen_entry is not None:
+                render_eda_panel(chosen_entry.eda, chosen_entry.df)
+        elif st.session_state.eda is not None:
+            render_eda_panel(st.session_state.eda, st.session_state.df)
 
     # Show suggestions only when chat is empty
     if not st.session_state.messages:

@@ -19,7 +19,7 @@ def test_e2b_backend_raises_on_execute():
     assert backend.name == "e2b"
     with pytest.raises(NotImplementedError, match="E2B"):
         import pandas as pd
-        backend.execute("print(1)", pd.DataFrame())
+        backend.execute("print(1)", {"df": pd.DataFrame()})
 
 
 def test_docker_backend_raises_on_execute():
@@ -27,7 +27,7 @@ def test_docker_backend_raises_on_execute():
     assert backend.name == "docker"
     with pytest.raises(NotImplementedError, match="Docker"):
         import pandas as pd
-        backend.execute("print(1)", pd.DataFrame())
+        backend.execute("print(1)", {"df": pd.DataFrame()})
 
 
 def test_unknown_mode_raises_value_error():
@@ -41,6 +41,7 @@ def test_local_executor_is_execution_backend():
 
 def test_local_executor_runs_code():
     import pandas as pd
-    result = get_backend("local").execute("print(df.shape)", pd.DataFrame({"a": [1, 2, 3]}))
+    df = pd.DataFrame({"a": [1, 2, 3]})
+    result = get_backend("local").execute("print(df.shape)", {"df": df})
     assert result.error is None
     assert "(3, 1)" in result.stdout

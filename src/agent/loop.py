@@ -8,9 +8,11 @@ from typing import Any
 import pandas as pd
 
 from src.agent.base import BaseLLMClient, TokenUsage
+from src.agent.multi_prompt import build_multi_dataframe_prompt
 from src.agent.system_prompt import build_system_prompt, build_sql_system_prompt
 from src.agent.tools import get_tool_schemas, dispatch_tool
 from src.config import MAX_TOOL_ITERATIONS
+from src.data.registry import DataFrameRegistry
 from src.data.schema import SchemaContext
 from src.execution.chart_validator import validate_figures
 from src.execution.result import ExecutionResult
@@ -43,17 +45,20 @@ def run_agent_turn(
     sql_schema: tuple | None = None,
     text_cols: tuple[str, ...] = (),
     viz_hint: str = "",
+    registry: DataFrameRegistry | None = None,
+    join_suggestions: list | None = None,
 ) -> TurnResult:
     """Run one user turn through the bounded ReAct loop.
 
     Supports two execution modes:
 
     **DataFrame mode** (default):
-        Pass *df* and *schema*.  The agent uses the ``execute_python`` tool.
+        Pass *registry* (preferred) or the deprecated *df* + *schema* pair.
+        The agent uses the ``execute_python`` tool.
 
     **SQL mode**:
         Pass *sql_engine* and *sql_schema*.  The agent uses the ``execute_sql``
-        tool.  *df* and *schema* are ignored.
+        tool.  DataFrame parameters are ignored.
 
     Parameters
     ----------
@@ -63,18 +68,31 @@ def run_agent_turn(
     messages:
         Current conversation history in the provider's expected format.
     df:
-        DataFrame for DataFrame mode.
+        Deprecated — single DataFrame for backward compatibility.  Ignored when
+        *registry* is provided.
     schema:
-        Schema context for DataFrame mode.
+        Deprecated — schema for the single *df*.  Ignored when *registry* is
+        provided.
     eda_summary:
-        Pre-computed EDA narrative injected into the system prompt.
+        Deprecated — EDA narrative for *df*.  Ignored when *registry* is
+        provided.
     sql_engine:
         SQLAlchemy engine for SQL mode.
     sql_schema:
         Tuple of :class:`~src.db.schema.TableSchema` objects for SQL mode.
     text_cols:
-        Names of free-form text columns detected by
-        :func:`~src.text.eda.detect_text_cols`.
+        Names of free-form text columns for the primary table.  Used for the
+        single-df path and as a fallback when *registry* is provided with one
+        entry.
+    viz_hint:
+        Optional visualization hint injected into the system prompt.
+    registry:
+        Multi-dataframe registry.  When provided, *df*/*schema*/*eda_summary*
+        are ignored.  A registry with a single entry behaves identically to
+        the legacy single-df path from the agent's perspective.
+    join_suggestions:
+        Pre-computed join suggestions from :func:`~src.data.join_detector.detect_join_keys`.
+        Only used when *registry* has more than one entry.
 
     Returns
     -------
@@ -85,17 +103,57 @@ def run_agent_turn(
     is_sql = sql_engine is not None
     mode = "sql" if is_sql else "dataframe"
 
+    # ── Build dataframe namespace (DataFrame mode only) ───────────────────────
+    # Resolve registry: if none provided, wrap legacy df param for compat.
+    effective_registry = registry
+    if effective_registry is None and df is not None:
+        effective_registry = DataFrameRegistry()
+        effective_registry.add("df", df)
+
+    dataframes: dict[str, pd.DataFrame] | None = (
+        effective_registry.as_namespace() if effective_registry is not None else None
+    )
+
     # ── Build system prompt ───────────────────────────────────────────────────
     if is_sql:
         if sql_schema is None:
             sql_schema = ()
         system = build_sql_system_prompt(sql_schema)
+    elif effective_registry is not None and effective_registry.count() > 1:
+        # Multi-dataframe path: use richer prompt with join suggestions
+        text_cols_by_table: dict[str, tuple[str, ...]] = {}
+        for entry in effective_registry.entries():
+            if entry.eda.text_cols:
+                text_cols_by_table[entry.name] = entry.eda.text_cols
+        system = build_multi_dataframe_prompt(
+            effective_registry,
+            join_suggestions or [],
+            text_cols_by_table=text_cols_by_table,
+            viz_hint=viz_hint,
+        )
     else:
-        if schema is None:
-            raise ValueError("schema must be provided for DataFrame mode.")
-        system = build_system_prompt(schema, eda_summary, text_cols=text_cols, viz_hint=viz_hint)
+        # Single-dataframe path (legacy + new single-entry registry)
+        if effective_registry is not None:
+            primary = effective_registry.primary()
+            if primary is not None:
+                _schema = primary.schema
+                _eda_summary = primary.eda.narrative
+                _text_cols = primary.eda.text_cols
+            else:
+                raise ValueError("Registry is empty; cannot build system prompt.")
+        else:
+            if schema is None:
+                raise ValueError("schema must be provided for DataFrame mode.")
+            _schema = schema
+            _eda_summary = eda_summary
+            _text_cols = text_cols
+        system = build_system_prompt(
+            _schema, _eda_summary, text_cols=_text_cols, viz_hint=viz_hint
+        )
 
     has_text_cols = bool(text_cols) and not is_sql
+    if not has_text_cols and effective_registry is not None:
+        has_text_cols = any(e.eda.text_cols for e in effective_registry.entries())
     tools = get_tool_schemas(mode, has_text_cols=has_text_cols)
 
     history = copy.deepcopy(messages)
@@ -127,7 +185,8 @@ def run_agent_turn(
                 result = dispatch_tool(
                     tc.name,
                     tc.input,
-                    df=df,
+                    df=df if dataframes is None else None,
+                    dataframes=dataframes,
                     sql_engine=sql_engine,
                     client=client,
                 )

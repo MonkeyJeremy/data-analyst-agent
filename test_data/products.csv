@@ -1,0 +1,31 @@
+product_id,name,category,cost,list_price
+201,Product_201,Clothing,85.41,205.15
+202,Product_202,Clothing,37.66,131.85
+203,Product_203,Books,287.03,379.61
+204,Product_204,Books,50.55,167.22
+205,Product_205,Clothing,63.31,147.31
+206,Product_206,Furniture,90.94,78.48
+207,Product_207,Office Supplies,161.17,227.83
+208,Product_208,Office Supplies,265.43,161.94
+209,Product_209,Clothing,229.36,194.1
+210,Product_210,Books,213.91,129.46
+211,Product_211,Furniture,56.68,385.13
+212,Product_212,Office Supplies,110.52,466.05
+213,Product_213,Electronics,146.13,256.5
+214,Product_214,Clothing,48.49,326.85
+215,Product_215,Office Supplies,85.66,435.58
+216,Product_216,Office Supplies,95.96,499.43
+217,Product_217,Office Supplies,42.55,312.56
+218,Product_218,Furniture,167.32,446.54
+219,Product_219,Office Supplies,212.98,455.67
+220,Product_220,Clothing,25.63,398.85
+221,Product_221,Furniture,146.93,238.55
+222,Product_222,Electronics,235.75,54.36
+223,Product_223,Furniture,225.66,22.67
+224,Product_224,Electronics,245.45,246.44
+225,Product_225,Furniture,137.23,254.74
+226,Product_226,Clothing,247.06,212.57
+227,Product_227,Electronics,76.02,290.56
+228,Product_228,Clothing,111.44,282.8
+229,Product_229,Furniture,57.02,420.76
+230,Product_230,Books,142.91,67.7

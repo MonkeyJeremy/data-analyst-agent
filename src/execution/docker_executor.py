@@ -17,7 +17,7 @@ class DockerExecutor(ExecutionBackend):
     def name(self) -> str:
         return "docker"
 
-    def execute(self, code: str, df: pd.DataFrame) -> ExecutionResult:
+    def execute(self, code: str, dataframes: dict[str, pd.DataFrame]) -> ExecutionResult:
         raise NotImplementedError(
             "Docker backend is not yet configured. "
             "Install Docker and the docker Python SDK (pip install docker) to enable it."

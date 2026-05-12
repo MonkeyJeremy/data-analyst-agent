@@ -1,0 +1,101 @@
+customer_id,name,city,segment,signup_date
+1001,Customer_0,New York,Home Office,2021-01-01
+1002,Customer_1,Houston,Consumer,2021-01-04
+1003,Customer_2,Houston,Home Office,2021-01-07
+1004,Customer_3,Chicago,Consumer,2021-01-10
+1005,Customer_4,Chicago,Home Office,2021-01-13
+1006,Customer_5,Phoenix,Home Office,2021-01-16
+1007,Customer_6,New York,Home Office,2021-01-19
+1008,Customer_7,Houston,Corporate,2021-01-22
+1009,Customer_8,Los Angeles,Corporate,2021-01-25
+1010,Customer_9,New York,Home Office,2021-01-28
+1011,Customer_10,Chicago,Consumer,2021-01-31
+1012,Customer_11,Phoenix,Home Office,2021-02-03
+1013,Customer_12,Houston,Corporate,2021-02-06
+1014,Customer_13,Houston,Corporate,2021-02-09
+1015,Customer_14,Houston,Corporate,2021-02-12
+1016,Customer_15,Houston,Corporate,2021-02-15
+1017,Customer_16,Chicago,Consumer,2021-02-18
+1018,Customer_17,New York,Consumer,2021-02-21
+1019,Customer_18,Phoenix,Consumer,2021-02-24
+1020,Customer_19,Chicago,Consumer,2021-02-27
+1021,Customer_20,Chicago,Corporate,2021-03-02
+1022,Customer_21,Los Angeles,Home Office,2021-03-05
+1023,Customer_22,New York,Corporate,2021-03-08
+1024,Customer_23,Phoenix,Corporate,2021-03-11
+1025,Customer_24,Houston,Home Office,2021-03-14
+1026,Customer_25,Houston,Corporate,2021-03-17
+1027,Customer_26,Chicago,Consumer,2021-03-20
+1028,Customer_27,Phoenix,Home Office,2021-03-23
+1029,Customer_28,Chicago,Corporate,2021-03-26
+1030,Customer_29,Chicago,Corporate,2021-03-29
+1031,Customer_30,Chicago,Corporate,2021-04-01
+1032,Customer_31,Los Angeles,Corporate,2021-04-04
+1033,Customer_32,New York,Consumer,2021-04-07
+1034,Customer_33,Chicago,Corporate,2021-04-10
+1035,Customer_34,Phoenix,Home Office,2021-04-13
+1036,Customer_35,New York,Consumer,2021-04-16
+1037,Customer_36,Phoenix,Corporate,2021-04-19
+1038,Customer_37,Phoenix,Consumer,2021-04-22
+1039,Customer_38,Los Angeles,Corporate,2021-04-25
+1040,Customer_39,Houston,Corporate,2021-04-28
+1041,Customer_40,New York,Home Office,2021-05-01
+1042,Customer_41,Houston,Consumer,2021-05-04
+1043,Customer_42,Houston,Consumer,2021-05-07
+1044,Customer_43,Los Angeles,Corporate,2021-05-10
+1045,Customer_44,New York,Home Office,2021-05-13
+1046,Customer_45,Phoenix,Home Office,2021-05-16
+1047,Customer_46,Chicago,Consumer,2021-05-19
+1048,Customer_47,Phoenix,Consumer,2021-05-22
+1049,Customer_48,Houston,Home Office,2021-05-25
+1050,Customer_49,Houston,Consumer,2021-05-28
+1051,Customer_50,Houston,Home Office,2021-05-31
+1052,Customer_51,New York,Consumer,2021-06-03
+1053,Customer_52,Los Angeles,Home Office,2021-06-06
+1054,Customer_53,Chicago,Consumer,2021-06-09
+1055,Customer_54,Chicago,Corporate,2021-06-12
+1056,Customer_55,New York,Corporate,2021-06-15
+1057,Customer_56,Chicago,Consumer,2021-06-18
+1058,Customer_57,New York,Corporate,2021-06-21
+1059,Customer_58,Houston,Corporate,2021-06-24
+1060,Customer_59,Houston,Home Office,2021-06-27
+1061,Customer_60,Phoenix,Home Office,2021-06-30
+1062,Customer_61,Houston,Corporate,2021-07-03
+1063,Customer_62,Los Angeles,Corporate,2021-07-06
+1064,Customer_63,Phoenix,Corporate,2021-07-09
+1065,Customer_64,Chicago,Corporate,2021-07-12
+1066,Customer_65,Los Angeles,Home Office,2021-07-15
+1067,Customer_66,Phoenix,Consumer,2021-07-18
+1068,Customer_67,Los Angeles,Consumer,2021-07-21
+1069,Customer_68,New York,Corporate,2021-07-24
+1070,Customer_69,Chicago,Consumer,2021-07-27
+1071,Customer_70,Houston,Consumer,2021-07-30
+1072,Customer_71,New York,Consumer,2021-08-02
+1073,Customer_72,Chicago,Home Office,2021-08-05
+1074,Customer_73,New York,Home Office,2021-08-08
+1075,Customer_74,Houston,Home Office,2021-08-11
+1076,Customer_75,Chicago,Corporate,2021-08-14
+1077,Customer_76,Los Angeles,Home Office,2021-08-17
+1078,Customer_77,Los Angeles,Consumer,2021-08-20
+1079,Customer_78,Chicago,Home Office,2021-08-23
+1080,Customer_79,Houston,Corporate,2021-08-26
+1081,Customer_80,Phoenix,Home Office,2021-08-29
+1082,Customer_81,Chicago,Consumer,2021-09-01
+1083,Customer_82,New York,Corporate,2021-09-04
+1084,Customer_83,Phoenix,Home Office,2021-09-07
+1085,Customer_84,Houston,Corporate,2021-09-10
+1086,Customer_85,Houston,Corporate,2021-09-13
+1087,Customer_86,New York,Consumer,2021-09-16
+1088,Customer_87,Los Angeles,Corporate,2021-09-19
+1089,Customer_88,Houston,Consumer,2021-09-22
+1090,Customer_89,Phoenix,Consumer,2021-09-25
+1091,Customer_90,Chicago,Home Office,2021-09-28
+1092,Customer_91,Phoenix,Corporate,2021-10-01
+1093,Customer_92,Phoenix,Corporate,2021-10-04
+1094,Customer_93,Los Angeles,Corporate,2021-10-07
+1095,Customer_94,Phoenix,Home Office,2021-10-10
+1096,Customer_95,Los Angeles,Consumer,2021-10-13
+1097,Customer_96,Los Angeles,Corporate,2021-10-16
+1098,Customer_97,Houston,Consumer,2021-10-19
+1099,Customer_98,Houston,Corporate,2021-10-22
+1100,Customer_99,New York,Home Office,2021-10-25
