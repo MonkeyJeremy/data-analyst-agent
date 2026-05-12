@@ -33,6 +33,8 @@ Agent: [calls analyze_text] [markdown table: label / confidence / note per row]
 
 ## Architecture
 
+**`main` branch — hand-rolled ReAct loop (`src/agent/loop.py`)**
+
 ```
 User question
   └─▶ build_system_prompt(schema, eda_summary, text_cols)
@@ -43,6 +45,20 @@ User question
               ├─ execute_sql(engine, query) # SELECT-only whitelist
               └─ analyze_text(texts, task)  # nested LLM call → JSON → table
               └─▶ append tool result → loop (max 5 iterations)
+```
+
+**`feat/langgraph` branch — LangGraph `StateGraph` (`src/agent/langgraph_loop.py`)**
+
+```
+User question
+  └─▶ build_system_prompt(...)  ──▶  stored in AnalystState.system
+  └─▶ StateGraph.invoke(state, config={thread_id})
+        agent_node: ChatAnthropic.invoke([SystemMessage] + state.messages)
+          ├─ AIMessage has tool_calls? ──▶ tools_node
+          │     tools_node: dispatch each @tool, push figures to sink
+          │     └─▶ ToolMessage results ──▶ back to agent_node
+          └─ no tool_calls / max_iter ──▶ END
+  └─▶ MemorySaver checkpointer persists state keyed by thread_id
 ```
 
 **Key design choices:**
@@ -140,6 +156,78 @@ Or enter your API key directly in the sidebar — no `.env` needed.
 pytest --cov=src --cov-report=term-missing
 ```
 
+## v8 — LangGraph Orchestration (`feat/langgraph` branch)
+
+> **Branch:** `feat/langgraph`  
+> The `main` branch keeps the hand-rolled ReAct loop (`src/agent/loop.py`).
+> This branch refactors the agent orchestration layer to use **LangGraph**,
+> replacing the manual `while` loop with a declarative `StateGraph`.
+
+### What changed
+
+The hand-rolled bounded loop in `loop.py`:
+
+```python
+for _ in range(MAX_TOOL_ITERATIONS):
+    response = client.call(...)
+    if response.stop_reason == "end_turn": return ...
+    if response.stop_reason == "tool_use":
+        for tc in response.tool_calls:
+            result = dispatch_tool(tc.name, ...)
+        history.extend(...)
+        continue
+    break
+```
+
+…is replaced by a declarative `StateGraph` in `src/agent/langgraph_loop.py`:
+
+```
+                   ┌──────────┐   tool_calls   ┌──────────┐
+                   │          │───────────────►│          │
+       START ────► │  agent   │                │  tools   │
+                   │  (LLM)   │◄───────────────│  (exec)  │
+                   │          │    results     │          │
+                   └────┬─────┘                └──────────┘
+                        │ end_turn / max_iter
+                        ▼
+                       END
+```
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `src/agent/langgraph_loop.py` | `StateGraph` definition, `AnalystState` TypedDict, message converters, `run_langgraph_turn()` |
+| `src/agent/lg_tools.py` | LangChain `@tool` factories that wrap the existing executors |
+
+### LangGraph concepts demonstrated
+
+| Concept | Where |
+|---------|-------|
+| **Typed state** (`TypedDict` + `add_messages` reducer) | `AnalystState` in `langgraph_loop.py` |
+| **`StateGraph` with named nodes** | `build_analyst_graph()` — `"agent"` and `"tools"` nodes |
+| **Conditional edges** | `should_continue()` routes to `"tools"` or `END` based on the last message |
+| **`MemorySaver` checkpointing** | Compiled with `checkpointer=MemorySaver()`; keyed by `thread_id` per session |
+| **`ChatAnthropic` + `.bind_tools()`** | LangChain model interface replaces `BaseLLMClient` |
+| **Closure-based tool factories** | `make_tools()` in `lg_tools.py` — tools close over dataframes + figure sinks |
+
+### Why LangGraph improves on the hand-rolled loop
+
+| Dimension | Hand-rolled (`loop.py`) | LangGraph (`langgraph_loop.py`) |
+|-----------|------------------------|--------------------------------|
+| Control flow | `while` + `if/elif` + `break/continue` | Declarative graph edges — topology is visual and auditable |
+| State management | Mutable local lists; manual `append`/`extend` | Immutable `TypedDict` with `add_messages` reducer; each node returns a diff |
+| Checkpointing | None — full history re-sent every turn | `MemorySaver` persists state per thread; resume mid-conversation |
+| Extensibility | Add another `elif` branch | Add a new node + edge — no changes to existing logic |
+| Testability | Mock the `client` and trace `history` mutations | Invoke the graph with a fake model; inspect state snapshots |
+
+### Backward compatibility
+
+`run_langgraph_turn()` is a **drop-in replacement** for `run_agent_turn()`:
+- Same parameters (registry, sql_engine, text_cols, viz_hint, …)
+- Returns the same `TurnResult` dataclass
+- `st.session_state["messages"]` stays in Anthropic dict format (converted at the boundary)
+
 ## Build Phases
 
 | Phase | Status | What it adds |
@@ -150,12 +238,16 @@ pytest --cov=src --cov-report=term-missing
 | v4 — Text Analysis | ✅ Done | Text column detection, word frequency, nested Claude call for sentiment/topics |
 | v5 — Hardening | ✅ Done | Prompt caching, token metering, AST import sandbox, README update |
 | v6 — Multi-provider | ✅ Done | `BaseLLMClient` ABC; Anthropic + OpenAI providers; extensible to Gemini, Groq, Ollama |
+| v7 — Multi-dataframe | ✅ Done | Upload multiple files, auto join detection, manual relationship builder, proactive join suggestions |
+| v8 — LangGraph | ✅ Done (`feat/langgraph`) | LangGraph `StateGraph` replaces hand-rolled ReAct loop; `MemorySaver` checkpointing; typed agent state |
 
 ## Tech Stack
 
 - [Streamlit](https://streamlit.io/) — UI
 - [Anthropic Claude API](https://docs.anthropic.com/) — LLM with tool use + prompt caching
 - [OpenAI API](https://platform.openai.com/docs) — alternative LLM provider
+- [LangGraph](https://langchain-ai.github.io/langgraph/) — agent orchestration (`feat/langgraph`): `StateGraph`, conditional edges, `MemorySaver` checkpointing
+- [LangChain Anthropic](https://python.langchain.com/docs/integrations/chat/anthropic/) — `ChatAnthropic` model with `.bind_tools()` (`feat/langgraph`)
 - [pandas](https://pandas.pydata.org/) + [plotly](https://plotly.com/python/) + [matplotlib](https://matplotlib.org/) — data analysis and charts
 - [SQLAlchemy](https://www.sqlalchemy.org/) — SQL database connectivity
 - [pytest](https://pytest.org/) — testing (129 tests)

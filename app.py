@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from src.agent.client import create_client
 from src.agent.viz_planner import plan_visualization, build_viz_hint
 from src.config import PROVIDERS
-from src.agent.loop import run_agent_turn
+from src.agent.langgraph_loop import run_langgraph_turn  # LangGraph refactor (feat/langgraph)
 from src.data.join_detector import detect_join_keys, JoinSuggestion
 from src.data.layout import detect_layout
 from src.data.loader import load_tabular
@@ -62,6 +62,7 @@ _TEXT_SUGGESTIONS = [
 
 
 def _init_session_state() -> None:
+    import uuid as _uuid  # local to avoid polluting module namespace
     defaults: dict = {
         "df": None,
         "schema": None,
@@ -71,6 +72,8 @@ def _init_session_state() -> None:
         "join_suggestions": [],
         "manual_joins": [],       # list[JoinSuggestion] — user-defined, persist across uploads
         "active_df_name": None,      # name of df shown in EDA panel
+        # LangGraph: stable thread ID for MemorySaver checkpointing within session
+        "lg_thread_id": str(_uuid.uuid4()),
         "messages": [],
         "last_figures": (),
         "last_plotly_figures": (),
@@ -726,14 +729,15 @@ def _run_query(prompt: str, api_key: str, provider: str, model: str) -> None:
                 for m in st.session_state.messages
             ]
 
+            thread_id = st.session_state.get("lg_thread_id")
             if st.session_state.get("_mode") == "sql":
                 sql_conn = st.session_state.sql_connection
                 sql_schema = describe_sql_schema(sql_conn.engine)
-                result = run_agent_turn(
-                    client=client,
+                result = run_langgraph_turn(
                     messages=llm_messages,
                     sql_engine=sql_conn.engine,
                     sql_schema=sql_schema,
+                    thread_id=thread_id,
                 )
             else:
                 eda = st.session_state.get("eda")
@@ -742,13 +746,14 @@ def _run_query(prompt: str, api_key: str, provider: str, model: str) -> None:
                     st.session_state.manual_joins
                     + st.session_state.get("join_suggestions", [])
                 )
-                result = run_agent_turn(
-                    client=client,
+                result = run_langgraph_turn(
                     messages=llm_messages,
                     registry=st.session_state.registry,
                     join_suggestions=combined_joins,
                     text_cols=text_cols,
                     viz_hint=viz_hint,
+                    client=client,
+                    thread_id=thread_id,
                 )
             st.session_state.messages = result.messages
             st.session_state.last_figures = result.figures
